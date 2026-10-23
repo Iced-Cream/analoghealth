@@ -267,9 +267,17 @@ class RemoteKeys:
                     owned=owned, cleanup=cleanup)
 
     def status(self, operation=None):
+        # The OS's MIDI input task stalls for a moment while it loads a project (a YES
+        # that starts one): keep asking for up to 3 s before giving up.
         operation = self.operation if operation is None else operation
-        return self._report(self.diag.call(req_key_status, self.session, operation,
-                                          timeout=0.25), operation)
+        deadline = time.monotonic() + 3
+        while True:
+            try:
+                return self._report(self.diag.call(req_key_status, self.session, operation,
+                                                  timeout=0.25), operation)
+            except TimeoutError:
+                if time.monotonic() >= deadline:
+                    raise
 
     def _wait(self, report, cancelling=False):
         deadline = time.monotonic() + 3
