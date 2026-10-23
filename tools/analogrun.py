@@ -34,7 +34,7 @@ Steps (one per line or separated by ';'; '#' starts a comment):
     expect-screen NAME [S]  stop unless the screen equals NAME.bin (in the plan's refs
                           folder), retrying for S seconds; a mismatch reports the differing
                           rows and columns and saves NAME-got.png and NAME-diff.png;
-                          `expect-screen NAME S rows=A-B` compares rows A..B only
+                          rows=A-B (anywhere after NAME) compares rows A..B only
     cc CH NUM VAL         MIDI channel 1-16
     nrpn CH MSB LSB VAL   VAL 0-16383 (CC 99, 98, 6, 38)
     note CH NOTE VEL [MS] note on, off after MS (default 100)
@@ -137,15 +137,18 @@ def say(*args, **kw):
     print(*args, file=OUT or sys.stdout, **kw)
 
 
-def screen_diff(got, want, w=128, h=64):
-    """Two framebuffers -> (differing pixels as (y, x), a short text report)."""
+def screen_diff(got, want, w=128, h=64, rows=None):
+    """Two framebuffers -> (differing pixels as (y, x), a short text report); `rows`
+    (first, last) compares only those rows."""
     g, r = elkrpc.Screen(w, h, got).rows(), elkrpc.Screen(w, h, want).rows()
-    diff = [(y, x) for y in range(h) for x in range(w) if g[y][x] != r[y][x]]
+    first, last = rows or (0, h - 1)
+    diff = [(y, x) for y in range(first, last + 1) for x in range(w) if g[y][x] != r[y][x]]
     if not diff:
         return diff, 'identical'
     ys, xs = [d[0] for d in diff], [d[1] for d in diff]
     y0, y1, x0, x1 = min(ys), max(ys), min(xs), max(xs)
-    text = '%d pixels differ in rows %d-%d, columns %d-%d' % (len(diff), y0, y1, x0, x1)
+    text = '%d pixels differ in rows %d-%d, columns %d-%d%s' % (
+        len(diff), y0, y1, x0, x1, ' (comparing rows %d-%d)' % rows if rows else '')
     if y1 - y0 < 12 and x1 - x0 < 64:          # small enough to show: + lit only now, - only before
         art = []
         for y in range(y0, y1 + 1):
@@ -241,8 +244,19 @@ class Session:
             s = self.shot(a[0])
             say('  %s: %dx%d, %d lit' % (a[0], s.w, s.h, s.lit()))
         elif op == 'expect-screen':
-            # expect-screen NAME[.bin] [WAIT_S]: compare with the reference (refs folder
-            # if set), retrying for up to WAIT_S while the screen settles.
+            # expect-screen NAME[.bin] [WAIT_S] [rows=A-B]: compare with the reference (refs
+            # folder if set), retrying for up to WAIT_S while the screen settles; rows=A-B
+            # compares only rows A..B (a test build's own drawing elsewhere, say, that
+            # depends on timing), and the failure report and diff picture cover only those.
+            opts = [w for w in a[1:] if w.startswith('rows=')]
+            a = a[:1] + [w for w in a[1:] if not w.startswith('rows=')]
+            span = None
+            if opts:
+                try:
+                    span = tuple(int(v) for v in opts[0][5:].split('-'))
+                    assert len(span) == 2 and 0 <= span[0] <= span[1] <= 63
+                except (ValueError, AssertionError):
+                    raise ValueError('rows=A-B with 0 <= A <= B <= 63, not %r' % opts[0])
             ref = a[0] if a[0].endswith('.bin') else a[0] + '.bin'
             refpath = os.path.join(self.refs, ref) if self.refs and not os.path.isabs(ref) else self.path(ref)
             got = self.rpc.screenshot()
@@ -257,21 +271,15 @@ class Session:
             with open(refpath, 'rb') as fh:
                 want = fh.read()
             end = time.monotonic() + (float(a[1]) if len(a) > 1 else 0)
-            # rows=A-B: compare only those rows (a test build's own drawing elsewhere,
-            # say, that depends on timing)
-            span = next((tuple(int(v) for v in w[5:].split('-')) for w in a[2:]
-                         if w.startswith('rows=')), None)
 
             def same(g):
-                if span is None:
-                    return g.pixels == want
-                gr, wr = g.rows(), elkrpc.Screen(g.w, g.h, want).rows()
-                return gr[span[0]:span[1] + 1] == wr[span[0]:span[1] + 1]
+                return g.pixels == want if span is None else not screen_diff(
+                    g.pixels, want, g.w, g.h, span)[0]
             while not same(got) and time.monotonic() < end:
                 time.sleep(0.2)
                 got = self.rpc.screenshot()
             if not same(got):
-                diff, text = screen_diff(got.pixels, want, got.w, got.h)
+                diff, text = screen_diff(got.pixels, want, got.w, got.h, span)
                 stem = self.path(os.path.splitext(os.path.basename(ref))[0])
                 with open(stem + '-got.png', 'wb') as fh:
                     fh.write(got.png(4))

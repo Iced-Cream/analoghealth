@@ -441,6 +441,33 @@ class PlanTest(unittest.TestCase):
         self.assertEqual(diff, [(3, 5)])
         self.assertTrue(text.startswith('1 pixels differ in rows 3-3, columns 5-5'))
         self.assertIn('\n    +', text)
+        # rows=: only those rows are compared and reported
+        self.assertEqual(analogrun.screen_diff(lit, blank, w, h, (4, 63)), ([], 'identical'))
+        diff, text = analogrun.screen_diff(lit, blank, w, h, (0, 5))
+        self.assertEqual(diff, [(3, 5)])
+        self.assertIn('(comparing rows 0-5)', text)
+
+    def test_expect_screen_rows_option(self):
+        w = 128
+        cols = [0] * w
+        cols[5] = 1 << 3
+        lit = b''.join(c.to_bytes(8, 'big') for c in cols)
+        d = tempfile.mkdtemp()
+        with open(os.path.join(d, 'r.bin'), 'wb') as fh:
+            fh.write(bytes(w * 8))
+
+        class Rpc:
+            def screenshot(self):
+                return analogrun.elkrpc.Screen(w, 64, lit)
+        s = analogrun.Session.__new__(analogrun.Session)
+        s.out, s.refs, s.record_refs, s.rpc = d, d, False, Rpc()
+        s.step('expect-screen r rows=4-63')            # before the wait, too
+        s.step('expect-screen r 0 rows=10-20')
+        with self.assertRaisesRegex(AssertionError, r'rows 3-3.*comparing rows 0-5'):
+            s.step('expect-screen r rows=0-5 0')
+        self.assertEqual(sorted(os.listdir(d)), ['r-diff.png', 'r-got.png', 'r.bin'])
+        with self.assertRaisesRegex(ValueError, 'rows=A-B'):
+            s.step('expect-screen r rows=9-2')
 
 
 class OffRigTest(unittest.TestCase):
