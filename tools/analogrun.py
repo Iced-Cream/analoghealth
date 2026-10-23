@@ -2,8 +2,11 @@
 """One program on a unit's USB MIDI port: keys, screenshots, notes and CCs,
 SysEx dumps and the data store, in one session, so a step can look at the
 screen while a key is held. The Analog Rytm MKII by default; --port NAME
-(before the command) picks another unit, e.g. --port "Analog Four". The kit
-and pattern dump commands speak the Rytm's SysEx and are for the Rytm only.
+(before the command) picks another unit, e.g. --port "Analog Four", or
+--port "IN,OUT" names the input and output ports apart (an emulator's
+loopback ports: --port "a4-emu usb out,a4-emu usb in"). The kit and pattern
+dump commands work on both units: the unit's product id (RPC Ping) picks its
+SysEx device byte.
 
     python analogrun.py shot OUT.png [--scale N]       the screen now (stock OS too)
     python analogrun.py run SCRIPT [--out DIR]         steps from a file ('-' = stdin)
@@ -11,7 +14,7 @@ and pattern dump commands speak the Rytm's SysEx and are for the Rytm only.
     python analogrun.py dump-capture OUT.syx [--kit N | --work-kit | --work-pattern | --keys SEQ | --request HEX] [--quiet S]
     python analogrun.py kit-roundtrip DIR --kit N      dump kit N, send it back, dump again
     python analogrun.py info                           product, OS version
-    python analogrun.py active                         the active project's kit 1 name (Rytm)
+    python analogrun.py active                         the active project's kit 1 name
     python analogrun.py data ls PATH
     python analogrun.py data get PATH OUT
     python analogrun.py data put PATH IN [--name '~T X'] --yes   replaces a test item
@@ -41,13 +44,15 @@ Steps (one per line or separated by ';'; '#' starts a comment):
 
 Kit dumps: the OS answers a dump request
 
-    F0 00 20 3C 07 00 <id> 01 01 <number> 00 00 00 05 F7
+    F0 00 20 3C <dev> 00 <id> 01 01 <number> 00 00 00 05 F7
 
-with the object as a dump (<id> - 0x10): 62 a saved kit 0-127 (--kit N), 68
-the kit being edited (--work-kit), 6A the pattern being edited
-(--work-pattern); the number is not used for the last two. It stores a kit
-dump it receives in the slot the dump names at any time, and reloads it when
-that slot is the active kit, so a round trip needs no menu on the unit.
+(<dev> 07 on the Analog Rytm MKII, 06 on the Analog Four MKII) with the
+object as a dump (<id> - 0x10): 62 a saved kit 0-127 (--kit N), 68 the kit
+being edited (--work-kit), 6A the pattern being edited (--work-pattern); the
+number is not used for the last two. Both units store a kit dump they receive
+in the slot the dump names at any time, and reload it when that slot is the
+active kit, so a round trip needs no menu on the unit. A kit's name is bytes
+4-19 of the unpacked dump on both.
 
 Test-session rules (testrules.py), only on a computer set up as a shared test
 rig (the file test-session-rules in %LOCALAPPDATA%\\analoghealth, or
@@ -76,13 +81,25 @@ from analogusb import Diag, RemoteKeys, decode_stats, key_sequence, peek, req_st
 
 ELEKTRON = bytes([0xF0, 0x00, 0x20, 0x3C])
 KIT_REQUEST, WORK_KIT_REQUEST, WORK_PATTERN_REQUEST = 0x62, 0x68, 0x6A
+RYTM, FOUR = 0x07, 0x06
+# RPC Ping product id -> dump device byte. By id, not name: the A4 MKII OS
+# answers "Analog Four" on a unit but "Analog Keys" in the emulator.
+DUMP_DEVICES = {0x10: RYTM, 0x0E: FOUR}       # Analog Rytm MKII, Analog Four MKII
 
 
-def dump_request(kind, number=0):
-    """The Rytm's dump request: the object comes back as dump id kind - 0x10."""
+def dump_device(pid, name=''):
+    """The SysEx device byte of a unit's dumps, from its RPC Ping reply."""
+    if pid not in DUMP_DEVICES:
+        raise ValueError('no kit/pattern dumps known for %s (product id 0x%02X): Analog Rytm '
+                         'MKII or Analog Four MKII only' % (name or 'this unit', pid))
+    return DUMP_DEVICES[pid]
+
+
+def dump_request(kind, number=0, device=RYTM):
+    """A dump request: the object comes back as dump id kind - 0x10."""
     if not 0 <= number < 128:
         raise ValueError('number 0..127')
-    return bytes([0xF0, 0x00, 0x20, 0x3C, 0x07, 0x00, kind, 0x01, 0x01, number,
+    return bytes([0xF0, 0x00, 0x20, 0x3C, device, 0x00, kind, 0x01, 0x01, number,
                   0x00, 0x00, 0x00, 0x05, 0xF7])
 
 
@@ -118,6 +135,13 @@ class Session:
         self.diag = Diag(self.port)
         self.out = out
         self._keys = None
+        self._device = None
+
+    def dump_request(self, kind, number=0):
+        """A dump request in this unit's SysEx (its device byte from RPC Ping, once)."""
+        if self._device is None:
+            self._device = dump_device(*self.rpc.ping())
+        return dump_request(kind, number, self._device)
 
     @property
     def keys(self):
@@ -232,7 +256,7 @@ class Session:
             # SAVE PROJECT AS makes the saved copy the active project (seen on the
             # unit), so its kit 1 can be marked now: that is how later steps know a
             # test project is active.
-            kit = self.capture(request=dump_request(KIT_REQUEST, 0), wait=5.0, quiet=0.5)[0]
+            kit = self.capture(request=self.dump_request(KIT_REQUEST, 0), wait=5.0, quiet=0.5)[0]
             old = testrules.kit_name(kit)
             if not testrules.is_test_name(old):
                 new = testrules.check_new_name(('~T ' + (old or 'KIT 1'))[:testrules.NAME_MAX])
@@ -356,7 +380,7 @@ def main(argv=None):
                                  formatter_class=argparse.RawDescriptionHelpFormatter,
                                  epilog=__doc__.split('\n', 1)[1])
     ap.add_argument('--port', default='Analog Rytm',
-                    help='part of the unit\'s MIDI port name (default: Analog Rytm)')
+                    help='part of the unit\'s MIDI port name (default: Analog Rytm), or IN,OUT')
     sub = ap.add_subparsers(dest='cmd', required=True)
     p = sub.add_parser('shot')
     p.add_argument('out')
@@ -399,24 +423,27 @@ def main(argv=None):
     if args.cmd == 'data' and args.op != 'ls' and not args.file:
         ap.error('data %s needs a file or directory' % args.op)
 
+    want = None                         # (dump request id, number) once the unit is known
     request = None
     if args.cmd in ('dump-capture', 'kit-roundtrip'):
         if getattr(args, 'work_kit', False):
-            request = dump_request(WORK_KIT_REQUEST)
+            want = (WORK_KIT_REQUEST, 0)
         elif getattr(args, 'work_pattern', False):
-            request = dump_request(WORK_PATTERN_REQUEST)
+            want = (WORK_PATTERN_REQUEST, 0)
         elif args.kit is not None:
             if not 0 <= args.kit < 128:
                 ap.error('--kit is 0..127')
-            request = dump_request(KIT_REQUEST, args.kit)
+            want = (KIT_REQUEST, args.kit)
         elif args.request:
             request = bytes.fromhex(args.request)
-        if args.cmd == 'kit-roundtrip' and not (request or args.keys):
+        if args.cmd == 'kit-roundtrip' and not (want or request or args.keys):
             ap.error('kit-roundtrip needs --kit N (or --keys / --request)')
 
     port = open_port(args.port)
     s = Session(port, getattr(args, 'out', '.'))
     try:
+        if want:
+            request = s.dump_request(*want)
         if args.cmd == 'shot':
             screen = s.shot(args.out, args.scale)
             print('%s: %dx%d, %d lit pixels' % (args.out, screen.w, screen.h, screen.lit()))
@@ -435,7 +462,7 @@ def main(argv=None):
             pid, name = s.rpc.ping()
             print('%s (product id 0x%02X), OS %s' % (name, pid, s.rpc.version()))
         elif args.cmd == 'active':
-            msgs = s.capture(request=dump_request(KIT_REQUEST, 0), wait=5.0, quiet=0.5)
+            msgs = s.capture(request=s.dump_request(KIT_REQUEST, 0), wait=5.0, quiet=0.5)
             name = testrules.kit_name(msgs[0])
             print('active project: kit 1 is %r (%s)' % (
                 name, 'a test project' if testrules.is_test_name(name) else 'not a test project'))

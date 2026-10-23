@@ -45,12 +45,23 @@ class _OutCaps(ctypes.Structure):
                 ('dwSupport', wintypes.DWORD)]
 
 
+def _pick(ports, names):
+    """Ports whose name contains one of `names`; a port named exactly one wins."""
+    exact = [k for k, n in enumerate(ports) if n.lower() in names]
+    return exact or [k for k, n in enumerate(ports) if any(part in n.lower() for part in names)]
+
+
 def find(name=None):
+    """-> (input, output) device numbers. NAME is part of both port names, or
+    'IN,OUT' to name them apart (an emulator's loopback ports)."""
     ins = _names(winmm.midiInGetNumDevs, winmm.midiInGetDevCapsW, _InCaps)
     outs = _names(winmm.midiOutGetNumDevs, winmm.midiOutGetDevCapsW, _OutCaps)
-    names = (name.lower(),) if name else ('analog rytm', 'analog four')
-    i = [k for k, n in enumerate(ins) if any(part in n.lower() for part in names)]
-    o = [k for k, n in enumerate(outs) if any(part in n.lower() for part in names)]
+    if name and ',' in name:
+        a, b = name.lower().split(',', 1)
+        i, o = _pick(ins, (a.strip(),)), _pick(outs, (b.strip(),))
+    else:
+        names = (name.lower(),) if name else ('analog rytm', 'analog four')
+        i, o = _pick(ins, names), _pick(outs, names)
     if len(i) != 1 or len(o) != 1:
         raise OSError('expected one %s MIDI port pair (ports: %s). Is it connected over USB and '
                       'switched on, with USB CONFIG set to USB MIDI or Overbridge? With both '

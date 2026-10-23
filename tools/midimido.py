@@ -7,19 +7,23 @@ class Port:
     def __init__(self, name=None):
         import mido
         self.mido = mido
+        # NAME is part of both port names, or 'IN,OUT' names them apart.
+        pair = [p.strip() for p in name.lower().split(',', 1)] if name and ',' in name else None
         wanted = (name.lower(),) if name else ('analog rytm', 'analog four')
 
-        def choose(names):
-            matches = [n for n in names if any(w in n.lower() for w in wanted)]
+        def choose(names, side=None):
+            want = (pair[side],) if pair else wanted
+            matches = [n for n in names if n.lower() in want] or [
+                n for n in names if any(w in n.lower() for w in want)]
             if len(matches) != 1:
                 raise OSError('Expected one Analog Rytm MKII or Analog Four MKII port (use --port '
                               'NAME when both are connected); found %r. Available: %r'
                               % (matches, names))
             return matches[0]
 
-        self.incoming = mido.open_input(choose(mido.get_input_names()))
+        self.incoming = mido.open_input(choose(mido.get_input_names(), 0))
         try:
-            self.outgoing = mido.open_output(choose(mido.get_output_names()))
+            self.outgoing = mido.open_output(choose(mido.get_output_names(), 1))
         except Exception:
             self.incoming.close()
             raise

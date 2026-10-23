@@ -116,10 +116,15 @@ def rename(rpc, path, name, timeout=5.0):
         raise RuleError('rename of %s to %r refused: %s' % (path, name, text))
 
 
+DUMP_HEADERS = (bytes([0xF0, 0x00, 0x20, 0x3C, 0x07, 0x00]),     # Analog Rytm MKII
+                bytes([0xF0, 0x00, 0x20, 0x3C, 0x06, 0x00]))     # Analog Four MKII
+
+
 def kit_name(dump):
-    """The name in a kit dump (stored 0x52 or edit buffer 0x58): body bytes 4-19."""
+    """The name in a kit dump (stored 0x52 or edit buffer 0x58): body bytes 4-19,
+    on the Rytm and the A4 alike."""
     from analogusb import unpack7
-    if len(dump) < 30 or dump[:6] != bytes([0xF0, 0x00, 0x20, 0x3C, 0x07, 0x00]):
+    if len(dump) < 30 or dump[:6] not in DUMP_HEADERS or dump[6] not in (0x52, 0x58):
         raise RuleError('not a kit dump')
     body = unpack7(dump[10:-5])
     return body[4:20].split(b'\0')[0].decode('ascii', 'replace').rstrip()
@@ -142,9 +147,9 @@ def check_active_project(session):
     Off a test rig: -> None, nothing checked."""
     if not enforced():
         return None
-    from analogrun import KIT_REQUEST, dump_request   # the runner's dump request
+    from analogrun import KIT_REQUEST   # the runner's dump request id
     try:
-        msgs = session.capture(request=dump_request(KIT_REQUEST, 0), wait=5.0, quiet=0.5)
+        msgs = session.capture(request=session.dump_request(KIT_REQUEST, 0), wait=5.0, quiet=0.5)
     except TimeoutError:
         raise RuleError('the active project\'s kit 1 did not answer: cannot tell it is a test project')
     name = kit_name(msgs[0])
@@ -156,5 +161,4 @@ def check_active_project(session):
 
 def is_kit_dump(msg):
     """A kit or sound dump the unit stores when it receives it."""
-    return (len(msg) > 7 and msg[:6] == bytes([0xF0, 0x00, 0x20, 0x3C, 0x07, 0x00])
-            and 0x50 <= msg[6] <= 0x5F)
+    return len(msg) > 7 and msg[:6] in DUMP_HEADERS and 0x50 <= msg[6] <= 0x5F
