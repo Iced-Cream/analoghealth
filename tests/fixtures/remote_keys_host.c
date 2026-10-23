@@ -21,6 +21,8 @@ void core_stock_buttons(unsigned group, unsigned mask)
     }
 }
 unsigned rk_now(void) { return clock_ticks; }
+static int turned[9], turn_calls;
+void fw_encoder(unsigned encoder, int delta) { assert(depth); turned[encoder] += delta; ++turn_calls; }
 
 /* A synthetic slot table (not the OS's): logical key i sits in slot 7i mod 88,
  * every other slot holds 0x87, which no key uses. */
@@ -40,6 +42,9 @@ void host_reset(void)
     for (i = 1; i <= RK_KEY_COUNT; ++i) host_table[7 * i % 88] = codes[i];
     memset(keymap, 0, sizeof(keymap));
     located = 0;
+    memset(turned, 0, sizeof(turned));
+    turn_calls = 0;
+    turns_left = 0;
     memset((void *)fw_key_state, 0, sizeof(fw_key_state));
     memset((void *)fw_ui_queue, 0, sizeof(fw_ui_queue));
     memset(physical, 0, sizeof(physical));
@@ -64,3 +69,5 @@ void host_off(unsigned off) { rk_off = off; }
 unsigned host_key_group(unsigned id) { locate(); return keymap[id].group; }
 unsigned host_key_mask(unsigned id) { locate(); return keymap[id].mask; }
 void host_unmap(unsigned id) { host_table[7 * id % 88] = 0x87; }
+int host_turned(unsigned encoder) { return turned[encoder]; }
+unsigned host_turn_calls(void) { return turn_calls; }

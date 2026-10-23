@@ -1,7 +1,9 @@
-# Bounded key protocol, revision 3
+# Bounded key protocol, revision 4
 
 Analog Rytm MKII, OS 1.74. Revision 3 is digihealth's revision 2 with 128-bit
-key maps, because the Rytm has 78 keys and revision 2's maps hold 64. The
+key maps, because the Rytm has 78 keys and revision 2's maps hold 64.
+Revision 4 adds action 4, TURN, for the encoders, and the encoder count to
+CAPABILITIES. The
 commands, actions, states and rules are revision 2's. The messages use the
 USB-only SysEx channel the diagnostics use; HELLO, STATS, PEEK and
 diagnostics revision 1 are unchanged.
@@ -25,15 +27,15 @@ exact decoded length, refusing truncated, oversized and noncanonical input.
 
 | Command | Arguments | Successful reply payload |
 |---|---|---|
-| `0x10 CAPABILITIES` | none | `u16 revision, u8 product, u8 OS_major, u8 OS_minor, u128 keys, u16 default_tap_ms, u16 max_tap_ms, u16 max_hold_ms` (27 bytes) |
+| `0x10 CAPABILITIES` | none | `u16 revision, u8 product, u8 OS_major, u8 OS_minor, u128 keys, u16 default_tap_ms, u16 max_tap_ms, u16 max_hold_ms, u8 encoders` (28 bytes) |
 | `0x11 OPEN` | `u32 session` | report |
 | `0x12 ACTION` | `u32 session, u32 operation, u8 action, u8 key, u16 duration_ms` | report |
 | `0x13 STATUS` | `u32 session, u32 operation` | report |
 | `0x14 CANCEL` | `u32 session` | report |
 
-- **Capabilities:** revision 3, product 3 (Analog Rytm MKII), OS 1.74. The
+- **Capabilities:** revision 4, product 3 (Analog Rytm MKII), OS 1.74. The
   128-bit map marks logical key ID minus one; 78 bits are set. Default tap
-  100 ms, maximum tap 250 ms, maximum press lease 2000 ms. The client checks
+  100 ms, maximum tap 250 ms, maximum press lease 2000 ms, 9 encoders. The client checks
   revision, product, OS and map before OPEN, and refuses names the map lacks
   before ACTION.
 - **Report:** `u32 session, u32 operation, u8 state, u8 reason, u128
@@ -43,7 +45,12 @@ exact decoded length, refusing truncated, oversized and noncanonical input.
   session or operation, 5 physical overlap, 6 remote keys off. Failed
   envelopes carry no payload.
 - **Actions:** 1 PRESS (a 1..2000 ms lease), 2 RELEASE (duration zero),
-  3 TAP (1..250 ms). Key IDs are `keys.def`'s (see [the button
+  3 TAP (1..250 ms), 4 TURN. For TURN, `key` is the encoder, 1-8 = A-H and
+  9 = LEVEL, and `duration` is `s8 step << 8 | u8 ticks`: the firmware sends
+  `step` counts (1..30, either sign) on each of `ticks` UI ticks (1..30), one
+  turn message a tick as the panel's encoders send them, and the action
+  completes after the last. TURN may run while a key is held (FUNC + turn).
+  A longer turn is several TURN actions. Key IDs are `keys.def`'s (see [the button
   names](BUTTONS.md)). The stock driver makes the UI events; no gesture or
   menu policy is encoded.
 

@@ -168,6 +168,50 @@ class Keys(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'unsupported key helper'):
             usb.RemoteKeys(self.diag)
 
+    def test_turns_reach_the_encoder_input(self):
+        with usb.RemoteKeys(self.diag) as keys:
+            keys.turn('E', 5, step=2)                     # 2 + 2 + 1, one a tick
+            self.assertEqual(self.lib.host_turned(4), 5)
+            self.assertEqual(self.lib.host_turn_calls(), 3)
+            keys.turn('LEVEL', -64)                       # 30 + 30 + 4 ticks of -1
+            self.assertEqual(self.lib.host_turned(8), -64)
+            self.assertEqual(self.lib.host_turn_calls(), 67)
+
+    def test_turn_with_a_held_key(self):
+        port = self.port
+        with patch.dict(sys.modules, midimido=types.SimpleNamespace(Port=lambda: port)),                 patch.object(usb.sys, 'platform', 'darwin'),                 contextlib.redirect_stdout(io.StringIO()):
+            usb.main(['turn', 'a', '-6', '--step', '3', '--hold', 'FUNC'])
+        actions = [struct.unpack('>IIBBH', raw[3:]) for raw in port.sent if raw[2] == usb.ACTION]
+        self.assertEqual([(a, key) for _, _, a, key, _ in actions],
+                         [(usb.PRESS, KEYS['FUNC']), (usb.TURN, 1), (usb.RELEASE, KEYS['FUNC'])])
+        self.assertEqual(actions[1][4], (0xFD << 8) | 2)
+        self.assertEqual(self.lib.host_turned(0), -6)
+        self.assertEqual(self.group('FUNC'), 0)
+
+    def test_busy_queue_defers_a_turn(self):
+        keys = usb.RemoteKeys(self.diag)
+        self.lib.host_busy(1)
+        keys.operation += 1
+        report = keys._report(self.diag.call(usb.req_action, keys.session, keys.operation,
+                                             usb.TURN, 2, (1 << 8) | 3), keys.operation)
+        self.lib.host_advance(50)
+        self.assertEqual(self.lib.host_turned(1), 0)
+        self.lib.host_busy(0)
+        self.assertEqual(keys._wait(report)['state'], 'completed')
+        self.assertEqual(self.lib.host_turned(1), 3)
+        keys.cancel()
+
+    def test_bad_turns_refused(self):
+        keys = usb.RemoteKeys(self.diag)
+        for encoder, duration in ((0, (1 << 8) | 1), (10, (1 << 8) | 1), (1, (1 << 8) | 0),
+                                  (1, (1 << 8) | 31), (1, 0x0001), (1, (31 << 8) | 1),
+                                  (1, (0xE1 << 8) | 1)):
+            with self.assertRaisesRegex(ValueError, 'refused'):
+                self.diag.call(usb.req_action, keys.session, keys.operation + 1, usb.TURN,
+                               encoder, duration, timeout=0.25)
+        self.assertEqual(self.lib.host_turn_calls(), 0)
+        keys.cancel()
+
     def test_selftest(self):
         with contextlib.redirect_stdout(io.StringIO()):
             usb.selftest()

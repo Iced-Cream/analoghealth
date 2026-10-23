@@ -8,7 +8,8 @@ ported to the Rytm. It adds two rows to SETTINGS:
   A read-only USB diagnostics channel lets `tools/rytmusb.py` read the same
   figures, and more, from a computer.
 - **REMOTE KEYS** (on at every power-on) lets `tools/rytmusb.py keys` press
-  the panel's buttons over USB: see [Remote keys](#remote-keys). Off, the
+  the panel's buttons, and `tools/rytmusb.py turn` turn its encoders, over
+  USB: see [Remote keys](#remote-keys). Off, the
   unit refuses key commands and lets go of any key the computer holds; the
   diagnostics still answer.
 
@@ -79,7 +80,13 @@ menu opened.
 
 - **Pads** from the computer are their key events only: the sound is a
   separate velocity message the helper does not send.
-- **Knobs** are outside the helper: it presses buttons, it does not turn.
+- **Encoders:** `python tools/rytmusb.py turn E -12` turns encoder E (A-H
+  are the data encoders, LEVEL the level/data knob) 12 counts left, one count
+  per UI tick (20 a second), as a panel turn does: the value popup and the
+  header's long name appear as for a hand turn. `--step N` sends N counts a
+  tick (faster, and the OS's acceleration applies); `--hold FUNC` holds a key
+  through the turn. An encoder pushed within the last moment ignores turns,
+  as on the panel.
 - **Physical keys win:** a key held on the panel cannot be taken by the
   computer, and a panel press of a key the computer holds survives the
   computer's release.
@@ -100,8 +107,9 @@ with RemoteKeys(Diag(port)) as keys:
     keys.release('FUNC')
 ```
 
-The protocol is digihealth's revision 2 with 128-bit key maps (revision 3),
-because the Rytm has more keys than revision 2's 64-bit maps hold. See [the
+The protocol is digihealth's revision 2 with 128-bit key maps, because the
+Rytm has more keys than revision 2's 64-bit maps hold, and a TURN action for
+the encoders (revision 4). See [the
 protocol reference](docs/REMOTE-KEYS.md).
 
 ## Why no FAST AUDIO
@@ -124,8 +132,8 @@ You need:
 
 ```bash
 python -m elekloader.patch --stock Analog-Rytm_MKII_OS1.74.syx \
-    --mod core-0.4.elemod --mod out/rytmhealth-1.0.elemod \
-    --out Analog-Rytm_MKII_OS1.74-health.syx --version RH11
+    --mod core-0.4.elemod --mod out/rytmhealth-1.1.elemod \
+    --out Analog-Rytm_MKII_OS1.74-health.syx --version RH12
 ```
 
 Flash it with Elektron Transfer, as for any OS update, and don't turn the
@@ -140,8 +148,8 @@ The Digitakt mk1 cross toolchain (m68k binutils and gcc; on Debian or Ubuntu,
 WSL) and elekloader, importable:
 
 ```bash
-python build.py --stock Analog-Rytm_MKII_OS1.74.syx     # -> out/rytmhealth-1.0.elemod
-python -m elekloader.lint out/rytmhealth-1.0.elemod --stock Analog-Rytm_MKII_OS1.74.syx --with core-0.4.elemod
+python build.py --stock Analog-Rytm_MKII_OS1.74.syx     # -> out/rytmhealth-1.1.elemod
+python -m elekloader.lint out/rytmhealth-1.1.elemod --stock Analog-Rytm_MKII_OS1.74.syx --with core-0.4.elemod
 ```
 
 | file | |

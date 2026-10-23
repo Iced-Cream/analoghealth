@@ -5,6 +5,8 @@
         .set fw_key_state, KEY_STATE
         .set fw_ui_queue, UI_QUEUE
         .set fw_key_table, KEY_TABLE
+        .globl fw_encoder
+        .set fw_encoder, ENC_INPUT
         .ifndef KEY_STACK
         .equ KEY_STACK, 68
         .endif

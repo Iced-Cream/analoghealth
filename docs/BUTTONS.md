@@ -13,8 +13,10 @@ and offers only the keys it finds.
   play the sound, which comes with the pad's velocity; the helper sends no
   velocity. In the emulator a remote `BD` sent no MIDI note, where a pad hit
   sends one.
-- **Not in the map:** knob turns, the pads' velocity and pressure, master
-  volume and power.
+- **Encoders** are turned with `rytmusb.py turn` (A-H, LEVEL), not named
+  here; their pushes are the `_PUSH` keys.
+- **Not in the map:** the pads' velocity and pressure, master volume and
+  power.
 
 | Name | Logical/USB ID | OS key code |
 |---|---:|---:|
