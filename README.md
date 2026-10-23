@@ -252,7 +252,9 @@ own encoder input, with no further hook.
   reached SYSTEM INFO after SYSTEM; YES ticked it and the top bar showed
   "CPU 73% DSP 67%/72%", then "RAM 13.7M"; a remote `turn LEVEL -20 --step 2`
   moved the SETTINGS cursor up a row; NO closed the menu with the readout
-  still on. The unit then went back to stock 1.56.
+  still on. With FUNC held on the panel, `watch` saw it and a remote FUNC
+  press was refused as a physical overlap; the panel's FUNC then came up
+  normally. The unit then went back to stock 1.56.
 
 ## Credits
 
