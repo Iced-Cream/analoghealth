@@ -7,9 +7,16 @@ enum { RK_PRESS = 1, RK_RELEASE, RK_TAP, RK_TURN };
 enum { RK_NONE, RK_ACCEPTED, RK_COMPLETED, RK_CANCELLED, RK_EXPIRED, RK_FAILED };
 enum { RK_OK, RK_INVALID, RK_UNKNOWN, RK_BUSY, RK_STALE, RK_OVERLAP, RK_OFF };
 /* Revision 3: digihealth's revision 2 with 128-bit key maps (the Rytm has 78
- * keys). Revision 4 adds TURN, encoder turns, and the encoder count to CAPS. */
-enum { RK_REVISION = 4, RK_KEY_COUNT = 78, RK_BITMAP = 16 };
-enum { RK_ENCODERS = 9, RK_MAX_TURNS = 30, RK_MAX_STEP = 30 };
+ * keys, the A4 89). Revision 4 adds TURN, encoder turns, and the encoder count
+ * to CAPS. Product 3 is the Analog Rytm MKII, 4 the Analog Four MKII. */
+#if RK_PRODUCT == 3
+enum { RK_KEY_COUNT = 78, RK_ENCODERS = 9 };          /* A-H, LEVEL */
+#elif RK_PRODUCT == 4
+enum { RK_KEY_COUNT = 89, RK_ENCODERS = 11 };         /* A-J, LEVEL */
+#else
+#error "RK_PRODUCT must be 3 (Analog Rytm MKII) or 4 (Analog Four MKII)"
+#endif
+enum { RK_REVISION = 4, RK_BITMAP = 16, RK_MAX_TURNS = 30, RK_MAX_STEP = 30 };
 
 int rk_receive(const unsigned char *packed, unsigned length, unsigned char *reply);
 void rk_tick(void *ctrl);

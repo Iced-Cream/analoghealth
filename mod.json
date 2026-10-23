@@ -1,11 +1,11 @@
 {
- "id": "rytmhealth",
- "version": "1.1",
- "title": "rytmhealth",
+ "id": "analoghealth",
+ "version": "1.2",
+ "title": "analoghealth",
  "category": "Performance",
  "author": "Iced-Cream, after irpina's digihealth",
  "license": "GPL-2.0-or-later",
- "description": "digihealth for the Analog Rytm MKII. Two SETTINGS rows. SYSTEM INFO shows CPU, DSP (the audio interrupt: sample voices and effects, not the analog voices), RAM and free sample memory in the top bar. The USB channel (SysEx device 0x7D) answers diagnostics and, while REMOTE KEYS is on (it is at power-on), bounded button and encoder commands from tools/rytmusb.py.",
+ "description": "Diagnostics for the Analog Rytm MKII, after irpina's digihealth. Two SETTINGS rows. SYSTEM INFO shows CPU, DSP (the audio interrupt: sample voices and effects, not the analog voices), RAM and free sample memory in the top bar. The USB channel (SysEx device 0x7D) answers diagnostics and, while REMOTE KEYS is on (it is at power-on), bounded button and encoder commands from tools/analogusb.py.",
  "device": "analog-rytm-mk2",
  "os": "1.74",
  "sources": [
@@ -29,7 +29,7 @@
   "KEY_TABLE": "0x40285970",
   "ENC_INPUT": "0x40082036"
  },
- "name_string": "rytmhealth",
+ "name_string": "analoghealth",
  "guarded_sites": [
   {
    "addr": "0x40000438",

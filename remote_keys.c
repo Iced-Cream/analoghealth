@@ -9,22 +9,28 @@
 #error "RK_PRODUCT must identify the device"
 #endif
 
-#if RK_PRODUCT != 3
-#error "Unknown key map: this is the Analog Rytm MKII's (product 3)"
-#endif
 /* Each logical key's OS key code. Its panel group and bit come from the
  * unit's own slot table at run time (locate), so no table ships here. */
 static const unsigned char codes[RK_KEY_COUNT + 1] = {
 #define KEY(id, name, code) [id] = code,
-#include "keys.def"
+#if RK_PRODUCT == 3
+#include "keys-ar2.def"
+#else
+#include "keys-a4.def"
+#endif
 #undef KEY
 };
 static struct key_position { unsigned char group, mask; } keymap[RK_KEY_COUNT + 1];
 static unsigned located;
 
 /* The OS's slot table: one key code per panel slot, slot = 8 group + bit
- * (core_candidate.s: fw_key_table, the pointer the button driver reads). */
+ * (core_candidate.s: fw_key_table). The Rytm's driver reads it through a
+ * pointer, the A4's directly. */
+#ifdef RK_KEY_TABLE_DIRECT
+extern const unsigned fw_key_table[];
+#else
 extern const unsigned *fw_key_table;
+#endif
 
 static void locate(void)
 {

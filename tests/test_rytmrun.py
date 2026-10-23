@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
 import elkrpc
 import rytmrun
-from rytmusb import pack7, unpack7
+from analogusb import pack7, unpack7
 
 DUMP_REQUEST = rytmrun.dump_request(rytmrun.KIT_REQUEST, 0)
 KIT = [bytes.fromhex('F0 00 20 3C 07 00 52 01 02 03 F7'), bytes.fromhex('F0 00 20 3C 07 00 52 04 F7')]

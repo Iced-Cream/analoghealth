@@ -4,15 +4,17 @@ import time
 
 
 class Port:
-    def __init__(self):
+    def __init__(self, name=None):
         import mido
         self.mido = mido
+        wanted = (name.lower(),) if name else ('analog rytm', 'analog four')
 
         def choose(names):
-            matches = [name for name in names
-                       if 'analog rytm' in name.lower()]
+            matches = [n for n in names if any(w in n.lower() for w in wanted)]
             if len(matches) != 1:
-                raise OSError('Expected one Analog Rytm MKII port; found %r. Available: %r' % (matches, names))
+                raise OSError('Expected one Analog Rytm MKII or Analog Four MKII port (use --port '
+                              'NAME when both are connected); found %r. Available: %r'
+                              % (matches, names))
             return matches[0]
 
         self.incoming = mido.open_input(choose(mido.get_input_names()))

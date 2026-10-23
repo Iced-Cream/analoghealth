@@ -1,7 +1,11 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""Build rytmhealth's .elemod from your stock OS file.
+"""Build analoghealth's .elemod from your stock OS file.
 
     python build.py --stock Analog-Rytm_MKII_OS1.74.syx [--out DIR]
+    python build.py --stock Analog-Four_MKII_OS1.56.syx [--out DIR]
+
+The stock file picks the device: the Analog Rytm MKII's mod is mod.json, the
+Analog Four MKII's a4/mod.json (the same sources with the A4's addresses).
 
 mod.json names each stock site by address, length and SHA-256 only
 ("guarded_sites"): no stock bytes are in this repository. This script reads
@@ -30,7 +34,8 @@ def sites_from_stock(mod, image, base):
         stock = image[addr - base:addr - base + n]
         if len(stock) != n or hashlib.sha256(stock).hexdigest() != s['stock_sha256']:
             raise ValueError('0x%08x: the stock file does not hold the expected code '
-                             '(is it Analog Rytm MKII OS 1.74?)' % addr)
+                             '(is it Analog Rytm MKII OS 1.74 or Analog Four MKII OS 1.56?)'
+                             % addr)
         out.append({'addr': s['addr'], 'stock': stock.hex(), 'op': s['op'], 'target': s['target']})
     return out
 
@@ -50,13 +55,14 @@ def main(argv=None):
         print('BUILD FAILED: elekloader is not importable (pip install it, or set PYTHONPATH '
               'to its folder)')
         return 1
-    with open(os.path.join(HERE, 'mod.json')) as fh:
-        mod = json.load(fh)
     try:
         stock, dev, _rel = formats.load(a.stock)
+        mdir = os.path.join(HERE, 'a4') if dev.key == 'analog-four-mk2' else HERE
+        with open(os.path.join(mdir, 'mod.json')) as fh:
+            mod = json.load(fh)
         image = formats.main_image(stock, dev)
         sites = sites_from_stock(mod, image, dev.main_load)
-        path, m = sdk.build(HERE, a.stock, a.out or os.path.join(HERE, 'out'), {'sites': sites})
+        path, m = sdk.build(mdir, a.stock, a.out or os.path.join(HERE, 'out'), {'sites': sites})
     except (sdk.BuildError, ValueError, OSError, KeyError) as e:
         print('BUILD FAILED: %s' % e)
         return 1

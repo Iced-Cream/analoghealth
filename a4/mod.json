@@ -1,0 +1,105 @@
+{
+ "id": "analoghealth",
+ "version": "1.2",
+ "title": "analoghealth",
+ "category": "Performance",
+ "author": "Iced-Cream, after irpina's digihealth",
+ "license": "GPL-2.0-or-later",
+ "description": "Diagnostics for the Analog Four MKII, after irpina's digihealth. Two SETTINGS rows. SYSTEM INFO shows CPU, DSP (the audio interrupt: the effects and the mix, not the analog voices) and RAM in the top bar. The USB channel (SysEx device 0x7D) answers diagnostics and, while REMOTE KEYS is on (it is at power-on), bounded button and encoder commands from tools/analogusb.py.",
+ "device": "analog-four-mk2",
+ "os": "1.56",
+ "sources": [
+  "../sysinfo.s",
+  "../core_candidate.c",
+  "../core_candidate.s",
+  "../remote_keys.c",
+  "../remote_keys.s"
+ ],
+ "cflags": [
+  "-DRK_OS_MINOR=56",
+  "-DRK_PRODUCT=4",
+  "-DRK_KEY_TABLE_DIRECT"
+ ],
+ "defsym": {
+  "A4156": "1",
+  "KEY_CONTINUE": "0x40064a98",
+  "KEY_STATE": "0x417bf8b8",
+  "UI_QUEUE": "0x4182b850",
+  "KEY_CLOCK": "0xfc07000c",
+  "KEY_STACK": "68",
+  "RK_KEYS": "1",
+  "KEY_TABLE": "0x40212158",
+  "ENC_INPUT": "0x40064d10"
+ },
+ "name_string": "analoghealth",
+ "guarded_sites": [
+  {
+   "addr": "0x40000438",
+   "len": 6,
+   "stock_sha256": "4c8d8bfc24008917e4a62944865404e5a6c3108d6d3488d8efa5667e5efdaefe",
+   "op": "jsr",
+   "target": "task_switch"
+  },
+  {
+   "addr": "0x40066336",
+   "len": 6,
+   "stock_sha256": "ef21d364a38ac6499ca97c2ce94d0a693c39b63c3693e42c3c9e4094243eaf1d",
+   "op": "jsr",
+   "target": "hook_sysex"
+  },
+  {
+   "addr": "0x40064a90",
+   "len": 8,
+   "stock_sha256": "3e7c95b32f444fd280cb96b2a6ea90525fe223d6e6b9352086d2cf41941ae854",
+   "op": "jmp",
+   "target": "core_panel_buttons"
+  }
+ ],
+ "subscribe": [
+  {
+   "event": "ev_settings",
+   "fn": "si_settings",
+   "order": 10
+  },
+  {
+   "event": "ev_settings",
+   "fn": "rk_settings",
+   "order": 30
+  },
+  {
+   "event": "ev_tick",
+   "fn": "si_tick",
+   "order": 50
+  },
+  {
+   "event": "ev_tick",
+   "fn": "rk_tick",
+   "order": 60
+  },
+  {
+   "event": "ev_draw",
+   "fn": "si_draw",
+   "order": 50
+  },
+  {
+   "event": "ev_render_in",
+   "fn": "si_render_in",
+   "order": 50
+  },
+  {
+   "event": "ev_render_out",
+   "fn": "si_render_out",
+   "order": 50
+  }
+ ],
+ "requires": [
+  "core"
+ ],
+ "resources": {
+  "names": [
+   "settings:SYSTEM INFO",
+   "settings:REMOTE KEYS",
+   "sysex:0x7d"
+  ]
+ }
+}

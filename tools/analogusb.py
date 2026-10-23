@@ -1,20 +1,22 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""Read rytmhealth diagnostics or operate bounded Analog Rytm MKII keys over USB MIDI.
+"""Read analoghealth diagnostics or operate bounded keys and encoders over USB MIDI,
+on the Analog Rytm MKII (OS 1.74) and the Analog Four MKII (OS 1.56).
 
-    python rytmusb.py cfw                  which mod answers, and its uptime
-    python rytmusb.py stats [N]            CPU, DSP, clock, heap: N readings, one a second
-    python rytmusb.py peek ADDR [LEN]      hex dump of DDR or the SRAM (0x8000xxxx)
-    python rytmusb.py dump ADDR LEN OUT    DDR to a file
-    python rytmusb.py decode FILE          decode the replies in a file of raw MIDI bytes
-    python rytmusb.py watch [S] [--until KEY]  print panel keys as they go down and up
-    python rytmusb.py selftest             check the encoder and decoder, no device
-    python rytmusb.py keys YES
-    python rytmusb.py keys 'FUNC(PLAY)'
-    python rytmusb.py keys 'GLOBAL,DOWN,DOWN,YES'
-    python rytmusb.py turn E -12 [--step N] [--hold FUNC]   encoder E 12 counts left
+    python analogusb.py cfw                  which mod answers, and its uptime
+    python analogusb.py stats [N]            CPU, DSP, clock, heap: N readings, one a second
+    python analogusb.py peek ADDR [LEN]      hex dump of DDR or the SRAM (0x8000xxxx)
+    python analogusb.py dump ADDR LEN OUT    DDR to a file
+    python analogusb.py decode FILE          decode the replies in a file of raw MIDI bytes
+    python analogusb.py watch [S] [--until KEY]  print panel keys as they go down and up
+    python analogusb.py selftest             check the encoder and decoder, no device
+    python analogusb.py keys YES
+    python analogusb.py keys 'FUNC(PLAY)'
+    python analogusb.py keys 'GLOBAL,DOWN,DOWN,YES'
+    python analogusb.py turn E -12 [--step N] [--hold FUNC]   encoder E 12 counts left
+    python analogusb.py --port "Analog Four" ...   pick the unit when both are connected
 
-irpina's digiusb.py (digihealth) for the Rytm. rytmhealth answers the same
-SysEx channel: Elektron's manufacturer header
+irpina's digiusb.py (digihealth) for the Rytm and the A4. analoghealth answers
+the same SysEx channel: Elektron's manufacturer header
 with a device byte (0x7D) no Elektron machine uses, so a stock OS drops the
 messages and talking to it does nothing. Diagnostics only read. The optional
 key helper supports bounded individual key actions after capability detection.
@@ -35,7 +37,7 @@ import secrets
 import struct
 import sys
 import time
-from keymap import KEYS, MAPS, SUPPORTED, PRODUCT
+from keymap import KEYSETS, MAPS, SUPPORTED, PRODUCTS, ENCODERS, ALL_KEYS, ALL_ENCODERS, A4
 
 HEADER = bytes([0xF0, 0x00, 0x20, 0x3C, 0x7D, 0x00])
 HELLO, STATS, PEEK = 0x01, 0x02, 0x03
@@ -44,7 +46,6 @@ STATUS = {0: 'ok', 1: 'refused', 2: 'unknown command', 3: 'busy',
           6: 'remote keys are off (SETTINGS > REMOTE KEYS)'}
 CAPS, OPEN, ACTION, KEY_STATUS, CANCEL = range(0x10, 0x15)
 PRESS, RELEASE, TAP, TURN = 1, 2, 3, 4
-ENCODERS = {name: i + 1 for i, name in enumerate('A B C D E F G H LEVEL'.split())}
 MAX_TURNS, MAX_STEP = 30, 30            # per TURN action: UI ticks (20 a second), counts per tick
 KEY_STATES = ('none', 'accepted', 'completed', 'cancelled', 'expired', 'failed')
 PEEK_MAX = 1024
@@ -228,7 +229,7 @@ class Diag:
                     raise _RequestRefused('the mod refused 0x%02x: %s'
                                           % (cmd, STATUS.get(r['status'], r['status'])))
                 return r['payload']
-        raise TimeoutError('no answer: is a firmware with rytmhealth installed?')
+        raise TimeoutError('no answer: is a firmware with analoghealth installed?')
 
 
 class RemoteKeys:
@@ -238,15 +239,17 @@ class RemoteKeys:
         self.diag = diag
         payload = diag.call(req_caps)
         if len(payload) != 28:
-            raise ValueError('invalid key capabilities (a rytmhealth older than key revision %d?)'
-                             % REVISION)
+            raise ValueError('invalid key capabilities (an analoghealth older than key '
+                             'revision %d?)' % REVISION)
         revision, product, major, minor, keys, default, tap, hold, encoders = decode_caps(payload)
-        if (revision != REVISION or (product, major, minor) != (PRODUCT, 1, 74)
+        if (revision != REVISION or product not in PRODUCTS
+                or (major, minor) != PRODUCTS[product][1]
                 or keys != SUPPORTED.get(product) or not 1 <= default <= tap <= 250
-                or not 1 <= hold <= 2000 or encoders != len(ENCODERS)):
+                or not 1 <= hold <= 2000 or encoders != len(ENCODERS[product])):
             raise ValueError('unsupported key helper, device, OS or limits')
         self.default_tap, self.max_tap, self.max_hold = default, tap, hold
         self.product, self.supported = product, keys
+        self.keyids, self.encoders = KEYSETS[product], ENCODERS[product]
         self.session = secrets.randbits(32) or 1
         self.operation = 0
         self._report(diag.call(req_open, self.session, timeout=0.25), 0)
@@ -285,17 +288,17 @@ class RemoteKeys:
     def action(self, action, key, duration=0):
         if action == TURN:
             ticks, step = duration & 0xFF, (duration >> 8) - (duration >> 7 & 0x100)
-            if (key not in ENCODERS or not 1 <= ticks <= MAX_TURNS or not step
+            if (key not in self.encoders or not 1 <= ticks <= MAX_TURNS or not step
                     or abs(step) > MAX_STEP):
                 raise ValueError('unsupported encoder or turn')
-            code = ENCODERS[key]
+            code = self.encoders[key]
         else:
             if key not in MAPS[self.product] or action not in (PRESS, RELEASE, TAP):
                 raise ValueError('unsupported key or action')
             limit = self.max_hold if action == PRESS else self.max_tap
             if action == RELEASE and duration != 0 or action != RELEASE and not 1 <= duration <= limit:
                 raise ValueError('invalid key duration')
-            code = KEYS[key]
+            code = self.keyids[key]
         self.operation += 1
         try:
             payload = self.diag.call(req_action, self.session, self.operation, action,
@@ -318,7 +321,7 @@ class RemoteKeys:
         return self.action(TAP, key, self.default_tap if duration is None else duration)
 
     def turn(self, encoder, delta, step=1):
-        """Turn `encoder` (A-H, LEVEL) by `delta` counts, `step` counts per UI tick
+        """Turn `encoder` (A-H or A-J, LEVEL) by `delta` counts, `step` counts per UI tick
         (20 a second), as TURN actions of up to MAX_TURNS ticks each."""
         if not delta or not 1 <= step <= MAX_STEP:
             raise ValueError('use a nonzero delta and a step of 1..%d' % MAX_STEP)
@@ -353,7 +356,7 @@ def key_sequence(text):
             raise argparse.ArgumentTypeError('use KEY or HOLD(TAP), separated by commas')
         outer, inner = match.groups()
         hold, tap = (outer, inner) if inner else (None, outer)
-        if tap not in KEYS or hold is not None and hold not in KEYS:
+        if tap not in ALL_KEYS or hold is not None and hold not in ALL_KEYS:
             raise argparse.ArgumentTypeError('unknown button in %r' % token.strip())
         if hold == tap:
             raise argparse.ArgumentTypeError('held and tapped buttons must differ')
@@ -376,15 +379,15 @@ def key_args(args):
 
 def turn_args(args):
     parser = argparse.ArgumentParser(
-        prog='rytmusb.py turn',
-        description='Turn an encoder as the panel does: ENCODER is A-H or LEVEL, DELTA the '
-                    'counts (negative turns left).', allow_abbrev=False)
-    parser.add_argument('encoder', type=str.upper, choices=sorted(ENCODERS), metavar='ENCODER')
+        prog='analogusb.py turn',
+        description='Turn an encoder as the panel does: ENCODER is A-H (Rytm) or A-J (A4), or '
+                    'LEVEL; DELTA the counts (negative turns left).', allow_abbrev=False)
+    parser.add_argument('encoder', type=str.upper, choices=sorted(ALL_ENCODERS), metavar='ENCODER')
     parser.add_argument('delta', type=int)
     parser.add_argument('--step', type=int, default=1,
                         help='counts per UI tick, 1..%d (default 1; larger is faster and '
                              'meets the OS acceleration)' % MAX_STEP)
-    parser.add_argument('--hold', choices=sorted(KEYS), metavar='KEY',
+    parser.add_argument('--hold', choices=sorted(ALL_KEYS), metavar='KEY',
                         help='hold this key during the turn (e.g. FUNC)')
     args = parser.parse_args(args)
     if not args.delta or not 1 <= args.step <= MAX_STEP:
@@ -397,6 +400,8 @@ def turn_args(args):
 
 def cmd_turn(diag, args):
     with RemoteKeys(diag) as keys:
+        if args.encoder not in keys.encoders or args.hold and args.hold not in keys.keyids:
+            raise ValueError('the connected device does not have that encoder or button')
         if args.hold:
             keys.press(args.hold)
         keys.turn(args.encoder, args.delta, args.step)
@@ -436,7 +441,8 @@ def show_stats(s):
     blocks = ', '.join('%d:%d' % (o, n) for o, n in enumerate(s['free_blocks']) if n)
     print('  heap free %.2f MB (%d bytes), faults %d, free blocks by order: %s'
           % (s['heap_free'] / 1048576, s['heap_free'], s['heap_faults'], blocks or '-'))
-    print('  sample memory free %.2f MB' % (s['sample_free'] / 1048576))
+    if s['sample_free']:
+        print('  sample memory free %.2f MB' % (s['sample_free'] / 1048576))
 
 
 def cmd_stats(d, args):
@@ -511,7 +517,7 @@ def selftest():
 
 
 def decode_file(path):
-    """Print every rytmhealth reply in a file of raw MIDI bytes (an emulator's
+    """Print every analoghealth reply in a file of raw MIDI bytes (an emulator's
     USB MIDI output, or a capture)."""
     with open(path, 'rb') as fh:
         data = fh.read()
@@ -539,7 +545,7 @@ def decode_file(path):
             revision, product, major, minor, keys, default, tap, hold, enc = decode_caps(p)
             print('  key revision %d, product %d, OS %d.%d, %d keys%s, %d encoders, tap %d of %d ms, '
                   'hold %d ms' % (revision, product, major, minor, bin(keys).count('1'),
-                                  '' if keys == SUPPORTED[PRODUCT] else ' (not this map)', enc,
+                                  '' if keys == SUPPORTED.get(product) else ' (not this map)', enc,
                                   default, tap, hold))
         else:
             print('  payload', p.hex(' '))
@@ -548,25 +554,33 @@ def decode_file(path):
 class PanelWatch:
     """The panel's button state as the OS sees it, read with PEEK (no firmware
     support needed). Each key's place comes from the unit's own table, read
-    once; mod.json names the two addresses. Held remote keys show too."""
-
-    GROUPS = 11
+    once; the device's mod.json names the two addresses. Held remote keys
+    show too."""
 
     def __init__(self, diag):
         import json
         import os
-        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'mod.json')) as fh:
-            defsym = json.load(fh)['defsym']
+        product = decode_caps(diag.call(req_caps))[1]
+        if product not in PRODUCTS:
+            raise ValueError('unsupported device (product %d)' % product)
+        root = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
+        manifest = os.path.join(root, 'a4', 'mod.json') if product == A4 else os.path.join(root, 'mod.json')
+        with open(manifest) as fh:
+            mod = json.load(fh)
+        defsym = mod['defsym']
         self.diag = diag
+        self.groups = 12 if product == A4 else 11
         self.state = int(defsym['KEY_STATE'], 16)
-        table, = struct.unpack('>I', peek(diag, int(defsym['KEY_TABLE'], 16), 4))
-        codes = struct.unpack('>%dI' % (8 * self.GROUPS), peek(diag, table, 32 * self.GROUPS))
-        names = {code: name for name, code in MAPS[PRODUCT].items()}
+        table = int(defsym['KEY_TABLE'], 16)
+        if '-DRK_KEY_TABLE_DIRECT' not in mod.get('cflags', []):
+            table, = struct.unpack('>I', peek(diag, table, 4))
+        codes = struct.unpack('>%dI' % (8 * self.groups), peek(diag, table, 32 * self.groups))
+        names = {code: name for name, code in MAPS[product].items()}
         self.slots = {(i // 8, 1 << i % 8): names[c] for i, c in enumerate(codes) if c in names}
 
     def held(self):
         """-> the set of key names down now."""
-        masks = peek(self.diag, self.state, self.GROUPS)
+        masks = peek(self.diag, self.state, self.groups)
         return {name for (g, m), name in self.slots.items() if masks[g] & m}
 
     def wait_for(self, name, timeout=60.0, interval=0.05):
@@ -585,7 +599,7 @@ def cmd_watch(d, args):
     if '--until' in args:
         i = args.index('--until')
         until = args[i + 1]
-        if until not in KEYS:
+        if until not in ALL_KEYS:
             raise ValueError('unknown button %r' % until)
         args = args[:i] + args[i + 2:]
     seconds = float(args[0]) if args else 30.0
@@ -614,6 +628,9 @@ COMMANDS = {'cfw': cmd_cfw, 'stats': cmd_stats, 'peek': cmd_peek, 'dump': cmd_du
 
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
+    name = None
+    if argv[:1] == ['--port']:
+        name, argv = argv[1], argv[2:]
     if argv[:1] == ['selftest']:
         selftest()
         return
@@ -628,7 +645,7 @@ def main(argv=None):
         from winmidi import Port
     else:
         from midimido import Port
-    port = Port()
+    port = Port(name)
     try:
         COMMANDS[argv[0]](Diag(port), args)
     finally:

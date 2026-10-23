@@ -2,7 +2,11 @@
 #ifndef CORE_KEYS_CANDIDATE_H
 #define CORE_KEYS_CANDIDATE_H
 
-enum { CORE_KEYS_GROUPS = 11 };
+#if RK_PRODUCT == 4
+enum { CORE_KEYS_GROUPS = 12, CORE_ENCODERS = 11 };   /* Analog Four MKII */
+#else
+enum { CORE_KEYS_GROUPS = 11, CORE_ENCODERS = 9 };    /* Analog Rytm MKII */
+#endif
 enum { CORE_KEYS_OK, CORE_KEYS_INVALID, CORE_KEYS_BUSY, CORE_KEYS_OVERLAP };
 
 /* Private candidate interface; not part of the released core ABI. */

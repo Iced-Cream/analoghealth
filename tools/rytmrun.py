@@ -17,19 +17,19 @@ screen while a key is held.
 
 Steps (one per line or separated by ';'; '#' starts a comment):
 
-    tap KEY [MS]          press and release (rytmhealth build)
+    tap KEY [MS]          press and release (analoghealth build)
     hold KEY [MS]         press; the firmware lets go after MS (default its maximum, 2 s)
     release KEY
-    keys SEQ              as rytmusb.py keys: 'GLOBAL,DOWN,FUNC(YES)'
-    turn ENC DELTA [STEP] encoder turn, if the rytmhealth build has them
+    keys SEQ              as analogusb.py keys: 'GLOBAL,DOWN,FUNC(YES)'
+    turn ENC DELTA [STEP] encoder turn, if the analoghealth build has them
     shot FILE             screenshot: .png (4x) or .bin (raw framebuffer)
     expect-screen FILE    stop unless the screen equals a saved .bin
     cc CH NUM VAL         MIDI channel 1-16
     nrpn CH MSB LSB VAL   VAL 0-16383 (CC 99, 98, 6, 38)
     note CH NOTE VEL [MS] note on, off after MS (default 100)
     wait S
-    stats                 one rytmhealth CPU/DSP/heap line
-    dump ADDR LEN FILE    DDR to a file (rytmhealth)
+    stats                 one analoghealth CPU/DSP/heap line
+    dump ADDR LEN FILE    DDR to a file (analoghealth)
     send FILE.syx         send the SysEx messages in a file (e.g. a saved dump)
     say TEXT              print TEXT
 
@@ -43,10 +43,10 @@ the kit being edited (--work-kit), 6A the pattern being edited
 dump it receives in the slot the dump names at any time, and reloads it when
 that slot is the active kit, so a round trip needs no menu on the unit.
 
-Key steps open a rytmhealth key session on first use and close it (releasing
+Key steps open a analoghealth key session on first use and close it (releasing
 any synthetic key) at the end; everything else works on a stock OS. Each
 command here is the only user of the port while it runs: close Transfer,
-Overbridge's MIDI, screendump and rytmusb.py first.
+Overbridge's MIDI, screendump and analogusb.py first.
 """
 import argparse
 import os
@@ -56,7 +56,7 @@ import sys
 import time
 
 import elkrpc
-from rytmusb import Diag, RemoteKeys, decode_stats, key_sequence, peek, req_stats
+from analogusb import Diag, RemoteKeys, decode_stats, key_sequence, peek, req_stats
 
 ELEKTRON = bytes([0xF0, 0x00, 0x20, 0x3C])
 KIT_REQUEST, WORK_KIT_REQUEST, WORK_PATTERN_REQUEST = 0x62, 0x68, 0x6A
@@ -91,7 +91,7 @@ class Tap:
 
 
 def is_dump(m):
-    """Elektron SysEx that is neither the RPC channel nor rytmhealth's."""
+    """Elektron SysEx that is neither the RPC channel nor analoghealth's."""
     return m.startswith(ELEKTRON) and not m.startswith(elkrpc.HEADER) and m[4:6] != b'\x7d\x00'
 
 
@@ -161,7 +161,7 @@ class Session:
             self.key_steps(' '.join(a))
         elif op == 'turn':
             if not hasattr(self.keys, 'turn'):
-                raise ValueError('this rytmusb.py has no encoder turns')
+                raise ValueError('this analogusb.py has no encoder turns')
             self.keys.turn(a[0].upper(), num(a[1]), num(a[2]) if len(a) > 2 else 1)
         elif op == 'shot':
             s = self.shot(a[0])
@@ -285,7 +285,7 @@ def open_port():
         from winmidi import Port
     else:
         from midimido import Port
-    return Port()
+    return Port('Analog Rytm')
 
 
 def progress(frac):

@@ -1,8 +1,12 @@
 | SPDX-License-Identifier: GPL-2.0-or-later
-| rytmhealth, SYSTEM INFO: the SETTINGS rows and the readout, render and idle
-| timing, and the USB diagnostics channel (tools/rytmusb.py). digihealth's
+| analoghealth, SYSTEM INFO: the SETTINGS rows and the readout, render and idle
+| timing, and the USB diagnostics channel (tools/analogusb.py). digihealth's
 | sysinfo.s (irpina) with the Analog Rytm MKII 1.74's addresses.
+        .ifdef  A4156                   | the Analog Four MKII 1.56 (a4/mod.json)
+        .include "a4156.inc"
+        .else                           | the Analog Rytm MKII 1.74
         .include "ar174.inc"
+        .endif
 
         .equ TICKS_PER_S, 20            | the UI's compose check runs at 20 Hz
         .equ PAGE_S,      2             | seconds per readout page
@@ -525,7 +529,7 @@ si_draw:
 | F0 00 20 3C 7D 00 <pack7: u16 seq, u8 cmd, args> F7, answered with
 | F0 00 20 3C 7D 00 <pack7: u16 seq, u8 cmd|0x80, u8 status, payload> F7
 | over USB. Diagnostics only read; key commands queue bounded key actions.
-| tools/rytmusb.py is the other end.
+| tools/analogusb.py is the other end.
         .equ DIAG_PROTO,  1
         .equ C_HELLO,     1             | -> u16 channel version, u32 seconds, name
         .equ C_STATS,     2             | -> the snapshot
@@ -536,15 +540,41 @@ si_draw:
                                         | can clear a status bit
         .equ RQ_MAX,      16
 
-| Called from the SysEx input (site 0x40083e04) for every incoming SysEx
-| message, in the MIDI input task, no lock held. a0 = a1 = the message, F0
-| to F7; d1 = its length; d2 = where it came from (2 or 4 USB, 8 or 0x10
-| DIN). a0, a1, d1, d2 must survive; d0, d3, a2 are free. It repeats the
-| work its call displaced (a3). A stock OS ignores device 0x7D.
+| Called from the SysEx input for every incoming SysEx message, in the MIDI
+| input task, no lock held. It repeats the work its call displaced. A stock
+| OS ignores device 0x7D.
         .globl  hook_sysex
+        .ifdef  A4156
+| The A4 (site 0x40066336): a0 = the message, F0 to F7; d2 = its length;
+| d3 = where it came from (2 or 4 USB, 8 or 0x10 DIN); d1 = the message too.
+| a0, d1, d2, d3 must survive; d0, d4, a1 are free; a2 is reloaded.
+hook_sysex:
+        lea     -20(%sp), %sp
+        movem.l %d1-%d3/%a0-%a1, (%sp)
+        move.l  %d2, %d1
+        move.l  %d3, %d2
+        bsr.w   sx_check
+        movem.l (%sp), %d1-%d3/%a0-%a1
+        lea     20(%sp), %sp
+        lea     SYSEX_A2, %a2           | the work the call displaced
+        rts
+        .else
+| The Rytm (site 0x40083e04): a0 = a1 = the message, F0 to F7; d1 = its
+| length; d2 = where it came from (2 or 4 USB, 8 or 0x10 DIN). a0, a1, d1,
+| d2 must survive; d0, d3, a2 are free.
 hook_sysex:
         lea     -16(%sp), %sp
         movem.l %d1-%d2/%a0-%a1, (%sp)
+        bsr.w   sx_check
+        movem.l (%sp), %d1-%d2/%a0-%a1
+        lea     16(%sp), %sp
+        lea     SYSEX_A3, %a3           | the work the call displaced
+        rts
+        .endif
+
+| sx_check(a0 the message, d1 its length, d2 its source): answers ours.
+| Uses d0, d3, a0, a2 and what diag_rx uses.
+sx_check:
         moveq   #7, %d0
         cmp.l   %d0, %d1
         blt.s   9f                      | shorter than header + F7
@@ -570,10 +600,7 @@ hook_sysex:
         move.l  %a0, -(%sp)
         bsr.w   diag_rx
         addq.l  #8, %sp
-9:      movem.l (%sp), %d1-%d2/%a0-%a1
-        lea     16(%sp), %sp
-        lea     SYSEX_A3, %a3           | the work the call displaced
-        rts
+9:      rts
 
 | diag_rx(const u8 *body, u32 len): body is what lies between the 6-byte
 | header and the F7. Answers on USB, through the OS's SysEx sender.

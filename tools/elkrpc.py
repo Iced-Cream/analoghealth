@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 """Elektron's own MIDI RPC (the channel Transfer uses), over the same Port as
-rytmusb.py: Ping, SoftwareVersion, Screenshot and the path-addressed data store
+analogusb.py: Ping, SoftwareVersion, Screenshot and the path-addressed data store
 that holds projects and sounds.
 
     request  F0 00 20 3C 10 00 <pack7: u16 seq, u16 0, u8 cmd, args> F7
@@ -8,14 +8,14 @@ that holds projects and sounds.
                                 u8 cmd | 0x80, args> F7
 
 The stock OS answers these, so everything here works with or without
-rytmhealth installed. Integers are big-endian, strings are null-terminated.
+analoghealth installed. Integers are big-endian, strings are null-terminated.
 The data store layout follows what elektroid (github.com/dagargo/elektroid)
 sends and reads; Screenshot is the request elektron-screen-tool uses.
 """
 import struct
 import zlib
 
-from rytmusb import pack7, unpack7
+from analogusb import pack7, unpack7
 
 HEADER = bytes([0xF0, 0x00, 0x20, 0x3C, 0x10, 0x00])
 PING, VERSION, SCREENSHOT = 0x01, 0x02, 0x04

@@ -2,7 +2,7 @@
 #include <assert.h>
 #include <string.h>
 
-volatile unsigned char fw_key_state[11];
+volatile unsigned char fw_key_state[16];
 volatile unsigned fw_ui_queue[8];
 volatile unsigned char rk_off;
 static unsigned clock_ticks, depth, calls;
@@ -21,16 +21,22 @@ void core_stock_buttons(unsigned group, unsigned mask)
     }
 }
 unsigned rk_now(void) { return clock_ticks; }
-static int turned[9], turn_calls;
+static int turned[16], turn_calls;
 void fw_encoder(unsigned encoder, int delta) { assert(depth); turned[encoder] += delta; ++turn_calls; }
 
-/* A synthetic slot table (not the OS's): logical key i sits in slot 7i mod 88,
- * every other slot holds 0x87, which no key uses. */
-static unsigned host_table[88];
+/* A synthetic slot table (not the OS's): logical key i sits in slot 7i mod
+ * (8 x groups), every other slot holds 0xff, which no key uses. */
+static unsigned host_table[16 * 8];
 const unsigned *fw_key_table = host_table;
 
-#define RK_OS_MINOR 74
+#ifndef RK_PRODUCT
 #define RK_PRODUCT 3
+#endif
+#if RK_PRODUCT == 3
+#define RK_OS_MINOR 74
+#else
+#define RK_OS_MINOR 56
+#endif
 #include "../../core_candidate.c"
 #include "../../remote_keys.c"
 
@@ -38,8 +44,8 @@ void host_reset(void)
 {
     unsigned i;
     assert(!depth);
-    for (i = 0; i < 88; ++i) host_table[i] = 0x87;
-    for (i = 1; i <= RK_KEY_COUNT; ++i) host_table[7 * i % 88] = codes[i];
+    for (i = 0; i < 16 * 8; ++i) host_table[i] = 0xff;
+    for (i = 1; i <= RK_KEY_COUNT; ++i) host_table[7 * i % (CORE_KEYS_GROUPS * 8)] = codes[i];
     memset(keymap, 0, sizeof(keymap));
     located = 0;
     memset(turned, 0, sizeof(turned));
@@ -68,6 +74,8 @@ void host_fill_after(unsigned group) { fill_after_group = group; }
 void host_off(unsigned off) { rk_off = off; }
 unsigned host_key_group(unsigned id) { locate(); return keymap[id].group; }
 unsigned host_key_mask(unsigned id) { locate(); return keymap[id].mask; }
-void host_unmap(unsigned id) { host_table[7 * id % 88] = 0x87; }
+void host_unmap(unsigned id) { host_table[7 * id % (CORE_KEYS_GROUPS * 8)] = 0xff; }
+unsigned host_slots(void) { return CORE_KEYS_GROUPS * 8; }
+unsigned host_product(void) { return RK_PRODUCT; }
 int host_turned(unsigned encoder) { return turned[encoder]; }
 unsigned host_turn_calls(void) { return turn_calls; }

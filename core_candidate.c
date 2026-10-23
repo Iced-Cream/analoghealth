@@ -7,7 +7,8 @@ extern unsigned core_keys_lock(void);
 extern void core_keys_unlock(unsigned saved_sr);
 extern void core_stock_buttons(unsigned group, unsigned mask);
 /* The panel's encoder input (core_candidate.s): one turn message, encoder
- * 0-7 = A-H, 8 = LEVEL/DATA, delta in counts as the panel sends them. */
+ * 0-7 = A-H, 8 = LEVEL on the Rytm, 0-9 = A-J, 10 = LEVEL on the A4, delta in
+ * counts as the panel sends them. */
 extern void fw_encoder(unsigned encoder, int delta);
 
 static unsigned char physical[CORE_KEYS_GROUPS], synthetic[CORE_KEYS_GROUPS];
@@ -53,7 +54,8 @@ int core_keys_set(unsigned group, unsigned mask)
         count = fw_ui_queue[1];
         capacity = fw_ui_queue[4] + 1;
         /* Leave room in the UI's event queue: send only while it holds 16
-         * events or fewer and has 16 free places; the UI tick retries. */
+         * events or fewer and has 16 free places; the UI tick retries. (The
+         * Rytm's key events come from a pool of 32, the A4's of 128.) */
         if (capacity < 16 || count > capacity - 16 || count > 16)
             result = CORE_KEYS_BUSY;
         else
@@ -72,7 +74,7 @@ int core_encoder_turn(unsigned encoder, int delta)
 {
     unsigned sr, count, capacity;
     int result = CORE_KEYS_OK;
-    if (encoder >= 9 || delta == 0 || delta < -127 || delta > 127)
+    if (encoder >= CORE_ENCODERS || delta == 0 || delta < -127 || delta > 127)
         return CORE_KEYS_INVALID;
     sr = core_keys_lock();
     count = fw_ui_queue[1];

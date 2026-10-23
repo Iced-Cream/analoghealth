@@ -1,7 +1,7 @@
 # Bounded key protocol, revision 4
 
-Analog Rytm MKII, OS 1.74. Revision 3 is digihealth's revision 2 with 128-bit
-key maps, because the Rytm has 78 keys and revision 2's maps hold 64.
+Analog Rytm MKII, OS 1.74, and Analog Four MKII, OS 1.56. Revision 3 is digihealth's revision 2 with 128-bit
+key maps, because the Rytm has 78 keys, the A4 89, and revision 2's maps hold 64.
 Revision 4 adds action 4, TURN, for the encoders, and the encoder count to
 CAPABILITIES. The
 commands, actions, states and rules are revision 2's. The messages use the
@@ -33,9 +33,9 @@ exact decoded length, refusing truncated, oversized and noncanonical input.
 | `0x13 STATUS` | `u32 session, u32 operation` | report |
 | `0x14 CANCEL` | `u32 session` | report |
 
-- **Capabilities:** revision 4, product 3 (Analog Rytm MKII), OS 1.74. The
-  128-bit map marks logical key ID minus one; 78 bits are set. Default tap
-  100 ms, maximum tap 250 ms, maximum press lease 2000 ms, 9 encoders. The client checks
+- **Capabilities:** revision 4; product 3 (Analog Rytm MKII), OS 1.74, or product 4 (Analog Four MKII), OS 1.56. The
+  128-bit map marks logical key ID minus one; 78 bits are set on the Rytm, 89 on the A4. Default tap
+  100 ms, maximum tap 250 ms, maximum press lease 2000 ms, 9 encoders on the Rytm and 11 on the A4. The client checks
   revision, product, OS and map before OPEN, and refuses names the map lacks
   before ACTION.
 - **Report:** `u32 session, u32 operation, u8 state, u8 reason, u128
@@ -45,12 +45,12 @@ exact decoded length, refusing truncated, oversized and noncanonical input.
   session or operation, 5 physical overlap, 6 remote keys off. Failed
   envelopes carry no payload.
 - **Actions:** 1 PRESS (a 1..2000 ms lease), 2 RELEASE (duration zero),
-  3 TAP (1..250 ms), 4 TURN. For TURN, `key` is the encoder, 1-8 = A-H and
-  9 = LEVEL, and `duration` is `s8 step << 8 | u8 ticks`: the firmware sends
+  3 TAP (1..250 ms), 4 TURN. For TURN, `key` is the encoder: on the Rytm 1-8 =
+  A-H and 9 = LEVEL, on the A4 1-10 = A-J and 11 = LEVEL; and `duration` is `s8 step << 8 | u8 ticks`: the firmware sends
   `step` counts (1..30, either sign) on each of `ticks` UI ticks (1..30), one
   turn message a tick as the panel's encoders send them, and the action
   completes after the last. TURN may run while a key is held (FUNC + turn).
-  A longer turn is several TURN actions. Key IDs are `keys.def`'s (see [the button
+  A longer turn is several TURN actions. Key IDs are those of `keys-ar2.def` or `keys-a4.def` (see [the button
   names](BUTTONS.md)). The stock driver makes the UI events; no gesture or
   menu policy is encoded.
 
@@ -75,7 +75,7 @@ view handled it. A lost ACTION reply is resolved with STATUS for the same
 session and operation, never a new action. There is no exactly-once guarantee
 across a reset.
 
-## The input bridge on the Rytm
+## The input bridge
 
 The bridge (`core_candidate.c`, digihealth's) sits where the panel's button
 states enter the OS. It merges the computer's keys with the panel's and hands
