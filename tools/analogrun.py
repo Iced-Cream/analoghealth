@@ -11,6 +11,7 @@ and pattern dump commands speak the Rytm's SysEx and are for the Rytm only.
     python analogrun.py dump-capture OUT.syx [--kit N | --work-kit | --work-pattern | --keys SEQ | --request HEX] [--quiet S]
     python analogrun.py kit-roundtrip DIR --kit N      dump kit N, send it back, dump again
     python analogrun.py info                           product, OS version
+    python analogrun.py active                         the active project's kit 1 name (Rytm)
     python analogrun.py data ls PATH
     python analogrun.py data get PATH OUT
     python analogrun.py data put PATH IN [--name '~T X'] --yes   replaces a test item
@@ -344,6 +345,7 @@ def main(argv=None):
     p.add_argument('steps')
     p.add_argument('--out', default='.')
     sub.add_parser('info')
+    sub.add_parser('active', help="the active project's kit 1 name, and whether it is a test project")
     p = sub.add_parser('dump-capture')
     p.add_argument('out')
     p.add_argument('--kit', type=int, help='request saved kit N (0-127, kit 1 on the unit is 0)')
@@ -409,6 +411,11 @@ def main(argv=None):
         elif args.cmd == 'info':
             pid, name = s.rpc.ping()
             print('%s (product id 0x%02X), OS %s' % (name, pid, s.rpc.version()))
+        elif args.cmd == 'active':
+            msgs = s.capture(request=dump_request(KIT_REQUEST, 0), wait=5.0, quiet=0.5)
+            name = testrules.kit_name(msgs[0])
+            print('active project: kit 1 is %r (%s)' % (
+                name, 'a test project' if testrules.is_test_name(name) else 'not a test project'))
         elif args.cmd == 'dump-capture':
             msgs = s.capture(args.keys, request, args.wait, args.quiet)
             save_syx(args.out, msgs)

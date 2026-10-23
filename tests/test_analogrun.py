@@ -259,6 +259,22 @@ class SessionTest(unittest.TestCase):
         self.assertEqual(analogrun.main(['kit-roundtrip', str(out), '--kit', '0', '--settle', '0']), 2)
         self.assertEqual(unit.received_kits, 0)
 
+    def test_active_command(self):
+        import contextlib, io
+        unit = self.unit
+
+        class Port(FakeUnit):
+            def __new__(cls, *_name):
+                return unit
+        saved, analogrun.open_port = analogrun.open_port, Port
+        self.addCleanup(setattr, analogrun, 'open_port', saved)
+        for name, verdict in (('~T KIT 1', 'a test project'), ('KIT A', 'not a test project')):
+            unit.kit = [make_kit(name)]
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(analogrun.main(['active']), 0)
+            self.assertIn('%r (%s)' % (name, verdict), out.getvalue())
+
     def test_send_step_checks_the_active_project(self):
         path = Path(self.tmp.name, 'k.syx')
         analogrun.save_syx(path, [make_kit('~T KIT 1', 5)])
