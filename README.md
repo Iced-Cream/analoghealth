@@ -86,7 +86,10 @@ menu opened.
   header's long name appear as for a hand turn. As on the panel, several
   counts make one value step (on a unit, 60 counts at 4 a tick moved FRQ 12
   steps, and 20 counts at 2 a tick moved the track level 2), so a turn of a
-  few counts may change nothing. `--step N` sends N counts a tick (faster,
+  few counts may change nothing. The OS also drops the first counts of a turn
+  after a pause, so a small turn out and the same turn back need not return
+  to the start: in the emulator, panel turns of +10 and then -10 counts on
+  the SRC page moved SWT and left it there, as remote turns do on a unit. `--step N` sends N counts a tick (faster,
   and the OS's acceleration applies); `--hold FUNC` holds a key through the
   turn. An encoder pushed within the last moment ignores turns,
   as on the panel.
