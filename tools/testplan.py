@@ -1,0 +1,295 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+"""Test plans: one file, one command, one short verdict.
+
+    python analogrun.py run PLAN.txt [--quiet]
+
+A plan is settings (`key = value`) followed by named steps (`[name]`), each a
+list of analogrun steps (see analogrun.py) or audio steps:
+
+    name = SRC hold
+    unit = rytm                   # the lock name of the unit (rytm, a4)
+    port = Analog Rytm            # or the emulator's "rytm-emu usb out,rytm-emu usb in"
+    emulator = yes                # an emulator run: no lock, references may be recorded
+    record-refs = yes             # (emulator only) expect-screen saves references
+    refs = refs                   # folder of reference screens, next to the plan
+    out = runs                    # where run folders go (default: runs, next to the plan)
+    lock = python C:/path/to/devlock.py        # claim/release command (optional)
+    flash = builds/X.syx          # flash this OS first (optional)
+    elkflash = C:/path/to/elkflash             # the elkflash checkout
+    emulator-run = runs/x-emu-...  # hardware flash: a passing emulator run of this plan
+    include = smoke.txt           # another plan's settings and steps; this file's settings win
+    audio-tools = C:/path/to/usb-audio         # asio_tone.py, asio_rec.py, audiocheck.py
+    audio-python = py -3.14
+    audio-driver = Elektron Analog Rytm MKII   # ASIO driver name
+    note = left on stock 1.74     # added to the release note
+
+    [boot screen]
+    expect-screen home 5          # reference home.bin, waiting up to 5 s
+    [pattern audio]
+    tap PLAY
+    audio-tone 10 tone            # 997 Hz into the unit for 10 s, all inputs to tone.wav
+    tap STOP
+    audio-dropouts tone 1,2
+    audio-compare stock-tone tone 1,2
+
+A step whose name ends in "(hardware)" (audio over ASIO, say) is skipped in an
+emulator run. Steps run in order and stop at the first failure (the rest are
+skipped).
+Everything goes to a run folder (log.txt, screenshots, recordings,
+summary.json); the command prints one line per step and the first failure's
+detail. A hardware flash needs `emulator-run`: a passing emulator run of the
+same plan with the same OS file (sha256), so a build reaches a unit only
+after it has passed in the emulator.
+"""
+import hashlib
+import json
+import os
+import re
+import shlex
+import subprocess
+import sys
+import time
+
+KEY = re.compile(r'^([a-z][a-z0-9-]*)\s*=\s*(.*)$')
+PORTS = {'rytm': 'Analog Rytm', 'a4': 'Analog Four'}
+
+
+def is_plan(path):
+    """A plan has settings or [step] headers; a plain steps file has neither."""
+    try:
+        with open(path, encoding='utf-8') as fh:
+            lines = [l.strip() for l in fh if l.strip() and not l.strip().startswith('#')]
+    except OSError:
+        return False
+    return any(l.startswith('[') and l.endswith(']') or re.match(r'include\s*=', l) for l in lines)
+
+
+def parse(path):
+    settings, steps = {}, []
+    with open(path, encoding='utf-8') as fh:
+        for n, raw in enumerate(fh, 1):
+            line = re.sub(r'(^|\s)#.*$', '', raw).strip()     # '#' starts a comment after a space
+            if not line:
+                continue
+            if line.startswith('[') and line.endswith(']'):
+                steps.append((line[1:-1].strip(), []))
+            elif not steps:
+                m = KEY.match(line)
+                if not m:
+                    raise ValueError('%s:%d: expected key = value before the first [step]' % (path, n))
+                settings[m.group(1)] = m.group(2).strip()
+            else:
+                steps[-1][1].append(line)
+    if 'include' in settings:
+        # include = OTHER.txt: its settings and steps, with this file's settings on
+        # top (e.g. the same plan for the emulator: emulator = yes, port = ...).
+        base = settings.pop('include')
+        base = base if os.path.isabs(base) else os.path.join(os.path.dirname(os.path.abspath(path)), base)
+        inc_settings, inc_steps = parse(base)
+        settings = dict(inc_settings, **settings)
+        steps = steps or inc_steps
+    if not steps:
+        raise ValueError('%s: no [step] sections' % path)
+    return settings, steps
+
+
+def sha256(path):
+    h = hashlib.sha256()
+    with open(path, 'rb') as fh:
+        for block in iter(lambda: fh.read(1 << 20), b''):
+            h.update(block)
+    return h.hexdigest()
+
+
+class Plan:
+    def __init__(self, path, port=None, quiet=False):
+        self.path = os.path.abspath(path)
+        self.here = os.path.dirname(self.path)
+        self.settings, self.steps = parse(path)
+        g = self.settings.get
+        self.name = g('name') or os.path.splitext(os.path.basename(path))[0]
+        self.unit = g('unit', 'rytm')
+        self.emulator = g('emulator', 'no').lower() == 'yes'
+        self.port = port or g('port') or PORTS.get(self.unit, 'Analog Rytm')
+        self.quiet = quiet
+        stamp = time.strftime('%Y%m%d-%H%M%S')
+        self.run_dir = os.path.join(os.path.normpath(self.rel(g('out', 'runs'))),
+                                    '%s-%s-%s' % (re.sub(r'\W+', '-', self.name).strip('-'),
+                                                  'emu' if self.emulator else self.unit, stamp))
+        os.makedirs(self.run_dir, exist_ok=True)
+        self.log = open(os.path.join(self.run_dir, 'log.txt'), 'a', encoding='utf-8')
+        self.results = []                # (step, 'ok' | 'FAIL' | 'skip', detail)
+        self.claimed = False
+
+    def rel(self, p):
+        return p if os.path.isabs(p) else os.path.join(self.here, p)
+
+    def note(self, text):
+        self.log.write(text + '\n')
+        self.log.flush()
+
+    def call(self, cmd, cwd=None, timeout=600):
+        """Run a command, its output to the log; -> (returncode, last output line)."""
+        self.note('$ ' + ' '.join(cmd))
+        r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout)
+        self.note(r.stdout + r.stderr)
+        lines = [l for l in (r.stdout + r.stderr).splitlines() if l.strip()]
+        return r.returncode, (lines[-1].strip() if lines else '')
+
+    # --- lock and flash ---------------------------------------------------------
+
+    def lock(self, *args):
+        cmd = self.settings.get('lock')
+        if not cmd or self.emulator:
+            return 0, 'no lock'
+        return self.call(shlex.split(cmd, posix=False) + list(args), timeout=900)
+
+    def flash(self):
+        g = self.settings.get
+        image = self.rel(g('flash'))
+        digest = sha256(image)
+        if not self.emulator:
+            ok, why = self.emulator_gate(digest)
+            if not ok:
+                raise RuntimeError(why)
+        cmd = [sys.executable, '-m', 'elkflash', 'upgrade', image, '--yes', '--no-confirm',
+               '--wait', '--quiet', '--log', os.path.join(self.run_dir, 'elkflash.log')]
+        if ',' in self.port:
+            i, o = [p.strip() for p in self.port.split(',', 1)]
+            cmd += ['--in-port', i, '--out-port', o]
+        else:
+            cmd += ['--port', self.port]
+        lock = g('lock')
+        if lock and not self.emulator:
+            cmd = shlex.split(lock, posix=False) + ['run', self.unit, '--'] + cmd
+        rc, last = self.call(cmd, cwd=g('elkflash'), timeout=900)
+        if rc:
+            raise RuntimeError('flash failed: ' + last)
+        return digest, last
+
+    def emulator_gate(self, digest):
+        run = self.settings.get('emulator-run')
+        if not run:
+            return False, 'a hardware flash needs emulator-run = a passing emulator run of this plan'
+        try:
+            with open(os.path.join(self.rel(run), 'summary.json'), encoding='utf-8') as fh:
+                s = json.load(fh)
+        except OSError as e:
+            return False, 'emulator-run has no summary.json: %s' % e
+        if not (s.get('emulator') and s.get('pass')):
+            return False, 'emulator-run %s did not pass in the emulator' % run
+        if s.get('flash_sha256') != digest:
+            return False, 'emulator-run flashed a different OS file (sha256 differs)'
+        return True, ''
+
+    # --- audio --------------------------------------------------------------------
+
+    def audio(self, op, a):
+        g = self.settings.get
+        py = shlex.split(g('audio-python', sys.executable), posix=False)
+        tools = g('audio-tools', '')
+        wav = lambda n: os.path.join(self.run_dir, n + '.wav')
+        if op == 'audio-tone':
+            cmd = py + [os.path.join(tools, 'asio_tone.py'), g('audio-driver', ''), wav(a[1]), a[0], '0']
+            cmd += a[2:3]
+        elif op == 'audio-record':
+            cmd = py + [os.path.join(tools, 'asio_rec.py'), 'rec', g('audio-driver', ''), a[0], wav(a[1])]
+        elif op == 'audio-dropouts':
+            cmd = py + [os.path.join(tools, 'audiocheck.py'), 'dropouts', wav(a[0]), '--quiet']
+            cmd += ['--ch', a[1]] if len(a) > 1 else []
+        elif op == 'audio-compare':
+            ref = a[0] if a[0].endswith('.wav') else a[0] + '.wav'
+            ref = ref if os.path.isabs(ref) else os.path.join(self.rel(g('refs', 'refs')), ref)
+            cmd = py + [os.path.join(tools, 'audiocheck.py'), 'compare', ref, wav(a[1]), '--quiet',
+                        '--png', os.path.join(self.run_dir, a[1] + '-compare.png')]
+            cmd += ['--ch', a[2]] if len(a) > 2 else []
+        else:
+            raise ValueError('unknown step %r' % op)
+        rc, last = self.call(cmd)
+        if rc:
+            raise AssertionError('%s %s: %s' % (op, ' '.join(a), last))
+
+    # --- the run ------------------------------------------------------------------
+
+    def run(self):
+        import analogrun
+        t0 = time.monotonic()
+        analogrun.OUT = self.log
+        session = port = None
+        digest = None
+        try:
+            rc, last = self.lock('claim', self.unit, '--for', 'test plan ' + self.name,
+                                 '--wait', '--timeout', '10m')
+            if rc:
+                self.results.append(('claim', 'FAIL', last))
+                return self.finish(t0, digest)
+            self.claimed = bool(self.settings.get('lock')) and not self.emulator
+            if self.settings.get('flash'):
+                try:
+                    digest, last = self.flash()
+                    self.results.append(('flash', 'ok', last))
+                except Exception as e:           # noqa: BLE001
+                    self.results.append(('flash', 'FAIL', str(e)))
+                    return self.finish(t0, digest)
+            port = analogrun.open_port(self.port)
+            session = analogrun.Session(port, self.run_dir)
+            session.refs = self.rel(self.settings.get('refs', 'refs'))
+            session.record_refs = self.emulator and self.settings.get('record-refs', 'no') == 'yes'
+            failed = False
+            for name, lines in self.steps:
+                if failed or (self.emulator and name.endswith('(hardware)')):
+                    self.results.append((name, 'skip', ''))
+                    continue
+                self.note('[%s]' % name)
+                try:
+                    for line in lines:
+                        self.note('  ' + line)
+                        words = shlex.split(line, comments=True)
+                        if words and words[0].startswith('audio-'):
+                            self.audio(words[0], words[1:])
+                        else:
+                            session.step(line)
+                    self.results.append((name, 'ok', ''))
+                except Exception as e:           # noqa: BLE001 - recorded as the step's failure
+                    import traceback
+                    traceback.print_exc(file=self.log)
+                    self.results.append((name, 'FAIL', '%s: %s' % (type(e).__name__, e)))
+                    failed = True
+        finally:
+            if session is not None:
+                try:
+                    session.close()
+                except Exception as e:           # noqa: BLE001 - e.g. the unit restarted
+                    self.note('closing the key session: %s' % e)
+                finally:
+                    port.close()
+            analogrun.OUT = None
+        return self.finish(t0, digest)
+
+    def finish(self, t0, digest):
+        ok = all(r[1] != 'FAIL' for r in self.results) and any(r[1] == 'ok' for r in self.results)
+        first = next((r for r in self.results if r[1] == 'FAIL'), None)
+        summary = {'plan': self.path, 'name': self.name, 'unit': self.unit, 'emulator': self.emulator,
+                   'pass': ok, 'seconds': round(time.monotonic() - t0, 1), 'flash_sha256': digest,
+                   'steps': [{'step': n, 'result': r, 'detail': d} for n, r, d in self.results]}
+        with open(os.path.join(self.run_dir, 'summary.json'), 'w', encoding='utf-8') as fh:
+            json.dump(summary, fh, indent=1)
+        if self.claimed:
+            note = 'test plan %s: %s' % (self.name, 'PASS' if ok else 'FAIL at %s' % first[0])
+            if self.settings.get('note'):
+                note += '; ' + self.settings['note']
+            self.lock('release', self.unit, '--note', note)
+        self.log.close()
+        lines = ['%s on %s: %s (%d steps, %.0f s) - %s' % (
+            self.name, 'the emulator' if self.emulator else self.unit, 'PASS' if ok else 'FAIL',
+            len(self.results), summary['seconds'], self.run_dir)]
+        if not self.quiet or not ok:
+            lines += ['  %-4s %s' % (r, n) for n, r, _ in self.results]
+        if first:
+            lines.append('first failure, %s: %s' % (first[0], first[2]))
+        print('\n'.join(lines))
+        return 0 if ok else 1
+
+
+def run_plan(path, port=None, quiet=False):
+    return Plan(path, port, quiet).run()

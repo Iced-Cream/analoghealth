@@ -10,6 +10,8 @@ SysEx device byte.
 
     python analogrun.py shot OUT.png [--scale N]       the screen now (stock OS too)
     python analogrun.py run SCRIPT [--out DIR]         steps from a file ('-' = stdin)
+    python analogrun.py [--quiet] run PLAN             a test plan, one verdict (testplan.py)
+    python analogrun.py --quiet [--log F] COMMAND ...  one line: ok, or what failed
     python analogrun.py do 'hold FUNC; shot f.png; release FUNC'
     python analogrun.py dump-capture OUT.syx [--kit N | --work-kit | --work-pattern | --keys SEQ | --request HEX] [--quiet S]
     python analogrun.py kit-roundtrip DIR --kit N      dump kit N, send it back, dump again
@@ -29,7 +31,9 @@ Steps (one per line or separated by ';'; '#' starts a comment):
     keys SEQ              as analogusb.py keys: 'GLOBAL,DOWN,FUNC(YES)'
     turn ENC DELTA [STEP] encoder turn, if the analoghealth build has them
     shot FILE             screenshot: .png (4x) or .bin (raw framebuffer)
-    expect-screen FILE    stop unless the screen equals a saved .bin
+    expect-screen NAME [S]  stop unless the screen equals NAME.bin (in the plan's refs
+                          folder), retrying for S seconds; a mismatch reports the differing
+                          rows and columns and saves NAME-got.png and NAME-diff.png
     cc CH NUM VAL         MIDI channel 1-16
     nrpn CH MSB LSB VAL   VAL 0-16383 (CC 99, 98, 6, 38)
     note CH NOTE VEL [MS] note on, off after MS (default 100)
@@ -76,6 +80,7 @@ import sys
 import time
 
 import elkrpc
+import testplan
 import testrules
 from analogusb import Diag, RemoteKeys, decode_stats, key_sequence, peek, req_stats
 
@@ -123,6 +128,32 @@ class Tap:
         return msgs
 
 
+OUT = None                       # --quiet points this at a log (None: stdout)
+
+
+def say(*args, **kw):
+    kw.setdefault('flush', True)
+    print(*args, file=OUT or sys.stdout, **kw)
+
+
+def screen_diff(got, want, w=128, h=64):
+    """Two framebuffers -> (differing pixels as (y, x), a short text report)."""
+    g, r = elkrpc.Screen(w, h, got).rows(), elkrpc.Screen(w, h, want).rows()
+    diff = [(y, x) for y in range(h) for x in range(w) if g[y][x] != r[y][x]]
+    if not diff:
+        return diff, 'identical'
+    ys, xs = [d[0] for d in diff], [d[1] for d in diff]
+    y0, y1, x0, x1 = min(ys), max(ys), min(xs), max(xs)
+    text = '%d pixels differ in rows %d-%d, columns %d-%d' % (len(diff), y0, y1, x0, x1)
+    if y1 - y0 < 12 and x1 - x0 < 64:          # small enough to show: + lit only now, - only before
+        art = []
+        for y in range(y0, y1 + 1):
+            art.append(''.join('+' if g[y][x] and not r[y][x] else '-' if r[y][x] and not g[y][x]
+                               else '#' if g[y][x] else '.' for x in range(x0, x1 + 1)))
+        text += '\n    ' + '\n    '.join(art)
+    return diff, text
+
+
 def is_dump(m):
     """Elektron SysEx that is neither the RPC channel nor analoghealth's."""
     return m.startswith(ELEKTRON) and not m.startswith(elkrpc.HEADER) and m[4:6] != b'\x7d\x00'
@@ -134,6 +165,8 @@ class Session:
         self.rpc = elkrpc.Rpc(self.port)
         self.diag = Diag(self.port)
         self.out = out
+        self.refs = None                 # folder of reference screens (.bin)
+        self.record_refs = False         # expect-screen saves the screen as the reference
         self._keys = None
         self._device = None
 
@@ -205,15 +238,36 @@ class Session:
             self.keys.turn(a[0].upper(), num(a[1]), num(a[2]) if len(a) > 2 else 1)
         elif op == 'shot':
             s = self.shot(a[0])
-            print('  %s: %dx%d, %d lit' % (a[0], s.w, s.h, s.lit()))
+            say('  %s: %dx%d, %d lit' % (a[0], s.w, s.h, s.lit()))
         elif op == 'expect-screen':
-            with open(self.path(a[0]), 'rb') as fh:
-                want = fh.read()
+            # expect-screen NAME[.bin] [WAIT_S]: compare with the reference (refs folder
+            # if set), retrying for up to WAIT_S while the screen settles.
+            ref = a[0] if a[0].endswith('.bin') else a[0] + '.bin'
+            refpath = os.path.join(self.refs, ref) if self.refs and not os.path.isabs(ref) else self.path(ref)
             got = self.rpc.screenshot()
+            if self.record_refs:
+                os.makedirs(os.path.dirname(refpath) or '.', exist_ok=True)
+                with open(refpath, 'wb') as fh:
+                    fh.write(got.pixels)
+                with open(os.path.splitext(refpath)[0] + '.png', 'wb') as fh:
+                    fh.write(got.png(4))
+                say('  recorded %s' % refpath)
+                return
+            with open(refpath, 'rb') as fh:
+                want = fh.read()
+            end = time.monotonic() + (float(a[1]) if len(a) > 1 else 0)
+            while got.pixels != want and time.monotonic() < end:
+                time.sleep(0.2)
+                got = self.rpc.screenshot()
             if got.pixels != want:
-                self.shot(os.path.splitext(a[0])[0] + '-got.png')
-                raise AssertionError('screen differs from %s (%d of %d bytes)' % (
-                    a[0], sum(x != y for x, y in zip(got.pixels, want)), len(want)))
+                diff, text = screen_diff(got.pixels, want, got.w, got.h)
+                stem = self.path(os.path.splitext(os.path.basename(ref))[0])
+                with open(stem + '-got.png', 'wb') as fh:
+                    fh.write(got.png(4))
+                with open(stem + '-diff.png', 'wb') as fh:
+                    fh.write(diff_png(got.w, got.h, diff))
+                raise AssertionError('screen differs from %s: %s (saved %s-got.png, -diff.png)'
+                                     % (ref, text, os.path.basename(stem)))
         elif op == 'cc':
             self.cc(*map(num, a))
         elif op == 'nrpn':
@@ -224,7 +278,7 @@ class Session:
             time.sleep(float(a[0]))
         elif op == 'stats':
             s = decode_stats(self.diag.call(req_stats))
-            print('  second %d: CPU %.1f %%, DSP %.1f %% (peak %.1f %%), heap free %d' % (
+            say('  second %d: CPU %.1f %%, DSP %.1f %% (peak %.1f %%), heap free %d' % (
                 s['seconds'], 100 * s.get('cpu', 0), 100 * s.get('dsp', 0),
                 100 * s.get('dsp_peak', 0), s['heap_free']))
         elif op == 'dump':
@@ -236,7 +290,7 @@ class Session:
             if any(testrules.is_kit_dump(m) for m in msgs):
                 testrules.check_active_project(self)
             self.send_dump(msgs)
-            print('  sent %d messages, %d bytes' % (len(msgs), sum(map(len, msgs))))
+            say('  sent %d messages, %d bytes' % (len(msgs), sum(map(len, msgs))))
         elif op == 'save-project':
             # save-project N NAME SEQ: SEQ ends on the unit's save (its naming screen's
             # YES); the new project is then renamed NAME over the data store.
@@ -250,7 +304,7 @@ class Session:
                                               % path)
                 time.sleep(0.5)
             mark(self, path, name)
-            print('  %s saved, named %r' % (path, name))
+            say('  %s saved, named %r' % (path, name))
             if not testrules.enforced():
                 return
             # SAVE PROJECT AS makes the saved copy the active project (seen on the
@@ -262,13 +316,13 @@ class Session:
                 new = testrules.check_new_name(('~T ' + (old or 'KIT 1'))[:testrules.NAME_MAX])
                 self.send_dump([testrules.renamed_kit_dump(kit, new)])
                 time.sleep(1.0)
-            print('  its kit 1 is %r' % testrules.check_active_project(self))
+            say('  its kit 1 is %r' % testrules.check_active_project(self))
         elif op == 'save-kit':
             if testrules.enforced():
-                print('  active project kit 1: %r' % testrules.check_active_project(self))
+                say('  active project kit 1: %r' % testrules.check_active_project(self))
             self.key_steps(' '.join(a))
         elif op == 'say':
-            print(' '.join(a))
+            say(' '.join(a))
         else:
             raise ValueError('unknown step %r' % op)
 
@@ -276,7 +330,7 @@ class Session:
         lines = [s for line in text.splitlines() for s in line.split(';')]
         for n, line in enumerate(lines, 1):
             if line.strip() and not line.strip().startswith('#'):
-                print('%3d  %s' % (n, line.strip()))
+                say('%3d  %s' % (n, line.strip()))
                 self.step(line)
 
     # --- SysEx dumps ------------------------------------------------------------
@@ -290,7 +344,7 @@ class Session:
         if keys:
             self.key_steps(keys)
         if not keys and not request:
-            print('start the SysEx send on the unit now (waiting %g s)' % wait)
+            say('start the SysEx send on the unit now (waiting %g s)' % wait)
         end, last = time.monotonic() + wait, None
         while True:
             self.port.receive(0.05)
@@ -347,9 +401,9 @@ def backup(s, path, out):
     """Save what `path` holds now before it is replaced (nothing if it is empty)."""
     try:
         save(out, s.rpc.data_read(path))
-        print('saved the current %s to %s' % (path, out))
+        say('saved the current %s to %s' % (path, out))
     except elkrpc.RpcError:
-        print('%s holds nothing to back up' % path)
+        say('%s holds nothing to back up' % path)
 
 
 def mark(s, path, name):
@@ -363,6 +417,16 @@ def mark(s, path, name):
         raise testrules.RuleError('%s should be named %r but lists as %r' % (path, name, now))
 
 
+def diff_png(w, h, diff):
+    """A PNG with only the differing pixels lit."""
+    stride = (h + 31) // 32
+    cols = [0] * w
+    for y, x in diff:
+        cols[x] |= 1 << (stride * 32 - h + y)
+    pixels = b''.join(c.to_bytes(stride * 4, 'big') for c in cols)
+    return elkrpc.Screen(w, h, pixels).png(4)
+
+
 def open_port(name='Analog Rytm'):
     if sys.platform == 'win32':
         from winmidi import Port
@@ -372,15 +436,18 @@ def open_port(name='Analog Rytm'):
 
 
 def progress(frac):
-    print('\r  %5.1f %%' % (100 * frac), end='', flush=True)
+    say('\r  %5.1f %%' % (100 * frac), end='', flush=True)
 
 
 def main(argv=None):
     ap = argparse.ArgumentParser(prog='analogrun.py', description=__doc__.split('\n')[0],
                                  formatter_class=argparse.RawDescriptionHelpFormatter,
                                  epilog=__doc__.split('\n', 1)[1])
-    ap.add_argument('--port', default='Analog Rytm',
+    ap.add_argument('--port', default=None,
                     help='part of the unit\'s MIDI port name (default: Analog Rytm), or IN,OUT')
+    ap.add_argument('-q', '--quiet', dest='quiet_mode', action='store_true',
+                    help='print one line (ok, or what failed); the rest goes to --log')
+    ap.add_argument('--log', help='with --quiet: append the full output to this file')
     sub = ap.add_subparsers(dest='cmd', required=True)
     p = sub.add_parser('shot')
     p.add_argument('out')
@@ -418,6 +485,27 @@ def main(argv=None):
     p.add_argument('--yes', action='store_true', help='put/roundtrip/clear: allow replacing or emptying the object')
     args = ap.parse_args(argv)
 
+    if args.cmd == 'run' and args.script != '-' and testplan.is_plan(args.script):
+        return testplan.run_plan(args.script, port=args.port, quiet=args.quiet_mode)
+    if not args.quiet_mode:
+        return _main(ap, args)
+    global OUT
+    OUT = open(args.log, 'a', encoding='utf-8') if args.log else open(os.devnull, 'w')
+    try:
+        rc = _main(ap, args)
+    except Exception as e:                       # noqa: BLE001 - one line, details in the log
+        import traceback
+        traceback.print_exc(file=OUT)
+        print('failed: %s: %s' % (type(e).__name__, e))
+        return 1
+    finally:
+        OUT.close()
+        OUT = None
+    print('ok' if rc == 0 else 'failed (exit %d)%s' % (rc, ', see ' + args.log if args.log else ''))
+    return rc
+
+
+def _main(ap, args):
     if args.cmd == 'data' and args.op in ('put', 'roundtrip', 'clear') and not args.yes:
         ap.error('data %s replaces the object on the unit: add --yes' % args.op)
     if args.cmd == 'data' and args.op != 'ls' and not args.file:
@@ -439,14 +527,14 @@ def main(argv=None):
         if args.cmd == 'kit-roundtrip' and not (want or request or args.keys):
             ap.error('kit-roundtrip needs --kit N (or --keys / --request)')
 
-    port = open_port(args.port)
+    port = open_port(args.port or 'Analog Rytm')
     s = Session(port, getattr(args, 'out', '.'))
     try:
         if want:
             request = s.dump_request(*want)
         if args.cmd == 'shot':
             screen = s.shot(args.out, args.scale)
-            print('%s: %dx%d, %d lit pixels' % (args.out, screen.w, screen.h, screen.lit()))
+            say('%s: %dx%d, %d lit pixels' % (args.out, screen.w, screen.h, screen.lit()))
         elif args.cmd in ('run', 'do'):
             os.makedirs(args.out, exist_ok=True)
             if args.cmd == 'do':
@@ -457,27 +545,27 @@ def main(argv=None):
                 with open(args.script) as fh:
                     text = fh.read()
             s.run(text)
-            print('done')
+            say('done')
         elif args.cmd == 'info':
             pid, name = s.rpc.ping()
-            print('%s (product id 0x%02X), OS %s' % (name, pid, s.rpc.version()))
+            say('%s (product id 0x%02X), OS %s' % (name, pid, s.rpc.version()))
         elif args.cmd == 'active':
             msgs = s.capture(request=s.dump_request(KIT_REQUEST, 0), wait=5.0, quiet=0.5)
             name = testrules.kit_name(msgs[0])
-            print('active project: kit 1 is %r (%s)' % (
+            say('active project: kit 1 is %r (%s)' % (
                 name, 'a test project' if testrules.is_test_name(name) else 'not a test project'))
         elif args.cmd == 'dump-capture':
             msgs = s.capture(args.keys, request, args.wait, args.quiet)
             save_syx(args.out, msgs)
-            print('%s: %d messages, %d bytes' % (args.out, len(msgs), sum(map(len, msgs))))
+            say('%s: %d messages, %d bytes' % (args.out, len(msgs), sum(map(len, msgs))))
         elif args.cmd == 'kit-roundtrip':
             os.makedirs(args.dir, exist_ok=True)
             if testrules.enforced():
-                print('active project kit 1: %r' % testrules.check_active_project(s))
+                say('active project kit 1: %r' % testrules.check_active_project(s))
             req = request
             first = s.capture(args.keys, req, wait=5.0 if req else 30.0)
             save_syx(os.path.join(args.dir, 'kit-out.syx'), first)
-            print('received %d messages, %d bytes' % (len(first), sum(map(len, first))))
+            say('received %d messages, %d bytes' % (len(first), sum(map(len, first))))
             if args.receive_keys:
                 s.key_steps(args.receive_keys)
             s.send_dump(first)
@@ -487,33 +575,33 @@ def main(argv=None):
             save_syx(os.path.join(args.dir, 'kit-back.syx'), again)
             diffs = compare(first, again)
             if diffs:
-                print('FAIL: the kit came back different: %s%s' % (
+                say('FAIL: the kit came back different: %s%s' % (
                     diffs[:12], ' ...' if len(diffs) > 12 else ''))
                 return 1
-            print('PASS: sent back and dumped again, byte-identical')
+            say('PASS: sent back and dumped again, byte-identical')
         elif args.cmd == 'data':
             if args.op == 'ls':
                 for e in s.rpc.data_list(args.path):
                     if 'id' in e:
-                        print('%-24s id %4d  %8d B  ops 0x%04x%s%s%s' % (
+                        say('%-24s id %4d  %8d B  ops 0x%04x%s%s%s' % (
                             e['name'] or '-', e['id'], e['size'], e['ops'], '  dir' if e['dir'] else '',
                             '' if e['valid'] else '  (no valid data)', '  +metadata' if e['metadata'] else ''))
                     else:
-                        print('%-24s dir, %d entries' % (e['name'], e['entries']))
+                        say('%-24s dir, %d entries' % (e['name'], e['entries']))
             elif args.op == 'get':
                 data = s.rpc.data_read(args.path, progress=progress)
                 with open(args.file, 'wb') as fh:
                     fh.write(data)
-                print('\n%s: %d bytes' % (args.file, len(data)))
+                say('\n%s: %d bytes' % (args.file, len(data)))
             elif args.op == 'clear':
                 name, _ = testrules.target(s.rpc, args.path)
                 if name is None:
-                    print('%s is already empty' % args.path)
+                    say('%s is already empty' % args.path)
                     return 0
                 testrules.check_write(s.rpc, args.path)
                 backup(s, args.path, args.file)
                 s.rpc.data_clear(args.path)
-                print('cleared %s' % args.path)
+                say('cleared %s' % args.path)
             elif args.op == 'put':
                 with open(args.file, 'rb') as fh:
                     data = fh.read()
@@ -521,13 +609,13 @@ def main(argv=None):
                 backup(s, args.path, args.file + '.before.bin')
                 s.rpc.data_write(args.path, data, progress=progress)
                 mark(s, args.path, name)
-                print('\nwrote %d bytes to %s, named %r' % (len(data), args.path, name))
+                say('\nwrote %d bytes to %s, named %r' % (len(data), args.path, name))
             else:
                 os.makedirs(args.file, exist_ok=True)
                 to = args.to or args.path
                 data = s.rpc.data_read(args.path, progress=progress)
                 save(os.path.join(args.file, 'out.bin'), data)
-                print('\nread %s: %d bytes' % (args.path, len(data)))
+                say('\nread %s: %d bytes' % (args.path, len(data)))
                 name = testrules.check_write(s.rpc, to, args.name)
                 if to != args.path:
                     backup(s, to, os.path.join(args.file, 'target-before.bin'))
@@ -537,21 +625,21 @@ def main(argv=None):
                     back = s.rpc.data_read(to, progress=progress)
                 finally:
                     mark(s, to, name)
-                print('\nwrote %s, named %r' % (to, name))
+                say('\nwrote %s, named %r' % (to, name))
                 save(os.path.join(args.file, 'back.bin'), back)
                 expected = {0x18}               # the slot number, which the unit rewrites
                 if len(back) != len(data) or any(
                         x != y for i, (x, y) in enumerate(zip(data, back)) if i not in expected):
                     n = sum(x != y for x, y in zip(back, data)) + abs(len(back) - len(data))
                     at = [i for i, (x, y) in enumerate(zip(data, back)) if x != y][:8]
-                    print('\nFAIL: %s read back %d bytes, %d differ: %s' % (to, len(back), n, ', '.join(
+                    say('\nFAIL: %s read back %d bytes, %d differ: %s' % (to, len(back), n, ', '.join(
                         '0x%x %02x->%02x' % (i, data[i], back[i]) for i in at)))
                     return 1
-                print('\nPASS: %s read back identical (%d bytes) apart from its slot number, '
+                say('\nPASS: %s read back identical (%d bytes) apart from its slot number, '
                       'then named %r' % (to, len(back), name))
         return 0
     except testrules.RuleError as e:
-        print('\nrefused (test-session rules): %s' % e)
+        say('\nrefused (test-session rules): %s' % e)
         return 2
     finally:
         try:

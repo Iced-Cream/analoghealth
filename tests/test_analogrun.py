@@ -4,6 +4,7 @@
 (Ping, SoftwareVersion, Screenshot, the data store) and sends a dump when
 asked: no MIDI device is opened, and no key session (that is test_keys.py)."""
 from pathlib import Path
+import json
 import os
 import struct
 import sys
@@ -363,6 +364,83 @@ class SessionTest(unittest.TestCase):
         self.assertEqual(backup.read_bytes(), bytes(100))
         with self.assertRaises(SystemExit):
             run('clear', '/projects/1', str(backup))
+
+
+class PlanTest(unittest.TestCase):
+    """analogrun run PLAN against the fake unit: one verdict, a run folder."""
+
+    def setUp(self):
+        import testplan
+        self.testplan = testplan
+        self.unit = unit = FakeUnit()
+
+        class Port(FakeUnit):
+            def __new__(cls, *_name):
+                return unit
+        saved, analogrun.open_port = analogrun.open_port, Port
+        self.addCleanup(setattr, analogrun, 'open_port', saved)
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def plan(self, text):
+        path = Path(self.tmp.name, 'p.txt')
+        path.write_text(text)
+        return str(path)
+
+    def run_plan(self, text, quiet=True):
+        import contextlib, io
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = analogrun.main((['--quiet'] if quiet else []) + ['run', self.plan(text)])
+        return rc, out.getvalue()
+
+    def test_record_then_compare(self):
+        head = 'name = home check\nemulator = yes\nrefs = refs\n'
+        rc, out = self.run_plan(head + 'record-refs = yes\n[boot]\nexpect-screen home\n[midi]\ncc 10 74 64\n')
+        self.assertEqual(rc, 0, out)
+        self.assertTrue(Path(self.tmp.name, 'refs', 'home.bin').exists())
+        rc, out = self.run_plan(head + '[boot]\nexpect-screen home\n[midi]\ncc 10 74 64\n')
+        self.assertEqual((rc, out.count('\n')), (0, 1), out)      # quiet: one line on success
+        self.assertIn('home check on the emulator: PASS (2 steps', out)
+        self.unit.pixels = bytes(len(self.unit.pixels))
+        rc, out = self.run_plan(head + '[boot]\nexpect-screen home\n[midi]\ncc 10 74 64\n')
+        self.assertEqual(rc, 1)
+        self.assertIn('FAIL boot', out)
+        self.assertIn('skip midi', out)
+        self.assertIn('first failure, boot: AssertionError: screen differs from home.bin: 192 pixels '
+                      'differ in rows 0-63, columns 0-127', out)
+        runs = sorted(Path(self.tmp.name, 'runs').iterdir())
+        self.assertTrue(any(f.name == 'home-got.png' for f in runs[-1].iterdir()))
+        summary = json.loads((runs[-1] / 'summary.json').read_text())
+        self.assertEqual((summary['pass'], summary['steps'][1]['result']), (False, 'skip'))
+
+    def test_hardware_flash_needs_an_emulator_run(self):
+        image = Path(self.tmp.name, 'os.syx')
+        image.write_bytes(b'\xF0\xF7')
+        rc, out = self.run_plan('unit = rytm\nflash = os.syx\n[boot]\nwait 0\n')
+        self.assertEqual(rc, 1)
+        self.assertIn('first failure, flash: a hardware flash needs emulator-run', out)
+        emu = Path(self.tmp.name, 'runs', 'emu-ok')
+        emu.mkdir(parents=True)
+        (emu / 'summary.json').write_text(json.dumps({'emulator': True, 'pass': True,
+                                                     'flash_sha256': 'other'}))
+        rc, out = self.run_plan('unit = rytm\nflash = os.syx\nemulator-run = runs/emu-ok\n[boot]\nwait 0\n')
+        self.assertIn('flashed a different OS file', out)
+
+    def test_plain_steps_file_is_not_a_plan(self):
+        self.assertFalse(self.testplan.is_plan(self.plan('cc 1 2 3\nwait 0\n')))
+        self.assertTrue(self.testplan.is_plan(self.plan('[a]\nwait 0\n')))
+
+    def test_screen_diff_text(self):
+        w, h = 128, 64
+        blank = bytes(w * 8)
+        cols = [0] * w
+        cols[5] = 1 << 3                       # row 3 lit in column 5
+        lit = b''.join(c.to_bytes(8, 'big') for c in cols)
+        diff, text = analogrun.screen_diff(lit, blank, w, h)
+        self.assertEqual(diff, [(3, 5)])
+        self.assertTrue(text.startswith('1 pixels differ in rows 3-3, columns 5-5'))
+        self.assertIn('\n    +', text)
 
 
 class OffRigTest(unittest.TestCase):
