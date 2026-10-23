@@ -244,6 +244,23 @@ class SessionTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             analogrun.dump_request(0x62, 128)
 
+    def test_dump_device_from_ping(self):
+        # The fake Rytm answers product 0x10: device byte 07.
+        self.assertEqual(self.s.dump_request(0x62, 5)[4], 0x07)
+        # An A4 MKII (0x0E) gets 06, whatever its name; other units have no dumps here.
+        s = analogrun.Session(self.unit, self.tmp.name)
+        s.rpc.ping = lambda: (0x0E, 'Analog Keys')
+        self.assertEqual(s.dump_request(0x68).hex(' '),
+                         'f0 00 20 3c 06 00 68 01 01 00 00 00 00 05 f7')
+        s = analogrun.Session(self.unit, self.tmp.name)
+        s.rpc.ping = lambda: (0x14, 'Digitone')
+        with self.assertRaises(ValueError):
+            s.dump_request(0x62)
+        a4_kit = make_kit('~T KIT 1')
+        a4_kit = a4_kit[:4] + b'\x06' + a4_kit[5:]
+        self.assertEqual(testrules.kit_name(a4_kit), '~T KIT 1')
+        self.assertTrue(testrules.is_kit_dump(a4_kit))
+
     def test_kit_roundtrip_command(self):
         unit = self.unit
 
