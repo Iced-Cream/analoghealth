@@ -25,6 +25,9 @@ class Port:
     def send(self, data):
         self.outgoing.send(self.mido.Message.from_bytes(data))
 
+    def send_short(self, *data):
+        self.outgoing.send(self.mido.Message.from_bytes(list(data)))
+
     def receive(self, seconds=1.0, until=None):
         messages = []
         deadline = time.monotonic() + seconds
