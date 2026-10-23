@@ -72,6 +72,12 @@ def find(name=None):
 
 
 class Port:
+    def __new__(cls, name=None, *args, **kw):
+        import midisock
+        if midisock.is_address(name):           # an emulator over TCP: no MIDI ports
+            return midisock.Port(name)
+        return super().__new__(cls)
+
     def __init__(self, name=None, nbuf=16, size=65536):
         i, o = find(name)
         self.hin, self.hout = wintypes.HANDLE(), wintypes.HANDLE()

@@ -4,6 +4,12 @@ import time
 
 
 class Port:
+    def __new__(cls, name=None):
+        import midisock
+        if midisock.is_address(name):           # an emulator over TCP: no MIDI ports
+            return midisock.Port(name)
+        return super().__new__(cls)
+
     def __init__(self, name=None):
         import mido
         self.mido = mido
