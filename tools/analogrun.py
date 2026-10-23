@@ -33,7 +33,8 @@ Steps (one per line or separated by ';'; '#' starts a comment):
     shot FILE             screenshot: .png (4x) or .bin (raw framebuffer)
     expect-screen NAME [S]  stop unless the screen equals NAME.bin (in the plan's refs
                           folder), retrying for S seconds; a mismatch reports the differing
-                          rows and columns and saves NAME-got.png and NAME-diff.png
+                          rows and columns and saves NAME-got.png and NAME-diff.png;
+                          `expect-screen NAME S rows=A-B` compares rows A..B only
     cc CH NUM VAL         MIDI channel 1-16
     nrpn CH MSB LSB VAL   VAL 0-16383 (CC 99, 98, 6, 38)
     note CH NOTE VEL [MS] note on, off after MS (default 100)
@@ -256,10 +257,20 @@ class Session:
             with open(refpath, 'rb') as fh:
                 want = fh.read()
             end = time.monotonic() + (float(a[1]) if len(a) > 1 else 0)
-            while got.pixels != want and time.monotonic() < end:
+            # rows=A-B: compare only those rows (a test build's own drawing elsewhere,
+            # say, that depends on timing)
+            span = next((tuple(int(v) for v in w[5:].split('-')) for w in a[2:]
+                         if w.startswith('rows=')), None)
+
+            def same(g):
+                if span is None:
+                    return g.pixels == want
+                gr, wr = g.rows(), elkrpc.Screen(g.w, g.h, want).rows()
+                return gr[span[0]:span[1] + 1] == wr[span[0]:span[1] + 1]
+            while not same(got) and time.monotonic() < end:
                 time.sleep(0.2)
                 got = self.rpc.screenshot()
-            if got.pixels != want:
+            if not same(got):
                 diff, text = screen_diff(got.pixels, want, got.w, got.h)
                 stem = self.path(os.path.splitext(os.path.basename(ref))[0])
                 with open(stem + '-got.png', 'wb') as fh:
