@@ -6,7 +6,7 @@ screen while a key is held.
     python rytmrun.py shot OUT.png [--scale N]       the screen now (stock OS too)
     python rytmrun.py run SCRIPT [--out DIR]         steps from a file ('-' = stdin)
     python rytmrun.py do 'hold FUNC; shot f.png; release FUNC'
-    python rytmrun.py dump-capture OUT.syx [--kit N | --keys SEQ | --request HEX] [--quiet S]
+    python rytmrun.py dump-capture OUT.syx [--kit N | --work-kit | --work-pattern | --keys SEQ | --request HEX] [--quiet S]
     python rytmrun.py kit-roundtrip DIR --kit N      dump kit N, send it back, dump again
     python rytmrun.py info                           product, OS version
     python rytmrun.py data ls PATH
@@ -30,14 +30,16 @@ Steps (one per line or separated by ';'; '#' starts a comment):
     wait S
     stats                 one rytmhealth CPU/DSP/heap line
     dump ADDR LEN FILE    DDR to a file (rytmhealth)
+    send FILE.syx         send the SysEx messages in a file (e.g. a saved dump)
     say TEXT              print TEXT
 
 Kit dumps: the OS answers a dump request
 
     F0 00 20 3C 07 00 <id> 01 01 <number> 00 00 00 05 F7
 
-with the object as a dump (<id> - 0x10): 62 a saved kit 0-127 (--kit N), 6A
-the kit being edited (--work-kit; the number is not used). It stores a kit
+with the object as a dump (<id> - 0x10): 62 a saved kit 0-127 (--kit N), 68
+the kit being edited (--work-kit), 6A the pattern being edited
+(--work-pattern); the number is not used for the last two. It stores a kit
 dump it receives in the slot the dump names at any time, and reloads it when
 that slot is the active kit, so a round trip needs no menu on the unit.
 
@@ -57,7 +59,7 @@ import elkrpc
 from rytmusb import Diag, RemoteKeys, decode_stats, key_sequence, peek, req_stats
 
 ELEKTRON = bytes([0xF0, 0x00, 0x20, 0x3C])
-KIT_REQUEST, WORK_KIT_REQUEST = 0x62, 0x6A
+KIT_REQUEST, WORK_KIT_REQUEST, WORK_PATTERN_REQUEST = 0x62, 0x68, 0x6A
 
 
 def dump_request(kind, number=0):
@@ -189,6 +191,10 @@ class Session:
             data = peek(self.diag, num(a[0]), num(a[1]))
             with open(self.path(a[2]), 'wb') as fh:
                 fh.write(data)
+        elif op == 'send':
+            msgs = load_syx(self.path(a[0]))
+            self.send_dump(msgs)
+            print('  sent %d messages, %d bytes' % (len(msgs), sum(map(len, msgs))))
         elif op == 'say':
             print(' '.join(a))
         else:
@@ -305,6 +311,7 @@ def main(argv=None):
     p.add_argument('out')
     p.add_argument('--kit', type=int, help='request saved kit N (0-127, kit 1 on the unit is 0)')
     p.add_argument('--work-kit', action='store_true', help='request the kit being edited')
+    p.add_argument('--work-pattern', action='store_true', help='request the pattern being edited')
     p.add_argument('--keys', help='or a key sequence that starts SYSEX SEND on the unit')
     p.add_argument('--request', help='or any request, as hex bytes')
     p.add_argument('--wait', type=float, default=30.0)
@@ -333,6 +340,8 @@ def main(argv=None):
     if args.cmd in ('dump-capture', 'kit-roundtrip'):
         if getattr(args, 'work_kit', False):
             request = dump_request(WORK_KIT_REQUEST)
+        elif getattr(args, 'work_pattern', False):
+            request = dump_request(WORK_PATTERN_REQUEST)
         elif args.kit is not None:
             if not 0 <= args.kit < 128:
                 ap.error('--kit is 0..127')
