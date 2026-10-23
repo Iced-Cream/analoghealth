@@ -11,13 +11,19 @@ test project first: by convention a test project names its kit 1 `~T ...`,
 and the active project's kit 1 is read back (a stored-kit dump request
 answers from the active project) before any kit write.
 
-There is deliberately no way to switch these checks off.
+The rules are for shared test rigs, not for everyone: they apply on a
+computer where the file `test-session-rules` exists in the analoghealth
+config folder (%LOCALAPPDATA%\\analoghealth on Windows, ~/.config/analoghealth
+elsewhere). Where it exists there is deliberately no option to switch them
+off; elsewhere the runner writes wherever it is told.
 
 Names follow the unit's name editor: up to 16 characters (15 here, to leave
 a terminator), upper case, from A-Z 0-9 space and + - = & / # @ ? % $ ~.
 """
+import os
 import re
 import struct
+import sys
 
 PREFIX = '~T '
 NAME_CHARS = set('ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 +-=&/#@?%$~')
@@ -28,6 +34,17 @@ DATA_RENAME = 0x5E
 
 class RuleError(Exception):
     """A write the test-session rules do not allow."""
+
+
+def marker_path():
+    base = os.environ.get('LOCALAPPDATA') if sys.platform == 'win32' else None
+    base = base or os.path.join(os.path.expanduser('~'), '.config')
+    return os.path.join(base, 'analoghealth', 'test-session-rules')
+
+
+def enforced():
+    """True on a computer set up as a shared test rig (the marker file exists)."""
+    return os.path.exists(marker_path())
 
 
 def is_test_name(name):
@@ -67,7 +84,10 @@ def target(rpc, path):
 def check_write(rpc, path, new_name=None):
     """Before a write, clear or rename of `path`: -> the ~T name the item must
     carry afterwards. An empty slot needs `new_name`; a ~T item keeps its name
-    unless `new_name` is given."""
+    unless `new_name` is given. Off a test rig: -> `new_name` upper-cased, or None
+    (no rename)."""
+    if not enforced():
+        return new_name.upper() if new_name else None
     parent, ident = split_path(path)
     name, _ = target(rpc, path)
     if parent == '/projects' and ident not in TEST_PROJECTS and name is None:
@@ -113,7 +133,10 @@ def renamed_kit_dump(dump, name):
 
 
 def check_active_project(session):
-    """The active project must be a test project: its kit 1 is named ~T."""
+    """The active project must be a test project: its kit 1 is named ~T.
+    Off a test rig: -> None, nothing checked."""
+    if not enforced():
+        return None
     from analogrun import KIT_REQUEST, dump_request   # the runner's dump request
     try:
         msgs = session.capture(request=dump_request(KIT_REQUEST, 0), wait=5.0, quiet=0.5)

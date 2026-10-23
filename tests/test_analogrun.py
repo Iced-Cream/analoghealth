@@ -4,6 +4,7 @@
 (Ping, SoftwareVersion, Screenshot, the data store) and sends a dump when
 asked: no MIDI device is opened, and no key session (that is test_keys.py)."""
 from pathlib import Path
+import os
 import struct
 import sys
 import tempfile
@@ -180,7 +181,11 @@ class RpcTest(unittest.TestCase):
 
 
 class SessionTest(unittest.TestCase):
+    """As on a shared test rig: the rules are on."""
+
     def setUp(self):
+        saved, testrules.enforced = testrules.enforced, lambda: True
+        self.addCleanup(setattr, testrules, 'enforced', saved)
         self.unit = FakeUnit()
         self.tmp = tempfile.TemporaryDirectory()
         self.s = analogrun.Session(self.unit, self.tmp.name)
@@ -341,6 +346,39 @@ class SessionTest(unittest.TestCase):
         self.assertEqual(backup.read_bytes(), bytes(100))
         with self.assertRaises(SystemExit):
             run('clear', '/projects/1', str(backup))
+
+
+class OffRigTest(unittest.TestCase):
+    """Without the marker file the runner writes wherever it is told."""
+
+    def setUp(self):
+        saved, testrules.enforced = testrules.enforced, lambda: False
+        self.addCleanup(setattr, testrules, 'enforced', saved)
+        self.unit = unit = FakeUnit()
+
+        class Port(FakeUnit):
+            def __new__(cls, *_name):
+                return unit
+        saved_port, analogrun.open_port = analogrun.open_port, Port
+        self.addCleanup(setattr, analogrun, 'open_port', saved_port)
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_writes_anywhere_and_names_only_on_request(self):
+        out = Path(self.tmp.name, 'rt')
+        self.assertEqual(analogrun.main(['data', 'roundtrip', '/projects/1', str(out),
+                                         '--to', '/projects/5', '--yes']), 0)
+        self.assertEqual(self.unit.store['/projects/5'], self.unit.store['/projects/1'])
+        self.assertNotIn('/projects/5', self.unit.names)
+        self.assertEqual(analogrun.main(['data', 'roundtrip', '/projects/1', str(out),
+                                         '--to', '/projects/6', '--name', 'my copy', '--yes']), 0)
+        self.assertEqual(self.unit.names['/projects/6'], 'MY COPY')
+        self.unit.kit = [make_kit('KIT A')]
+        self.assertEqual(analogrun.main(['kit-roundtrip', str(out), '--kit', '0', '--settle', '0']), 0)
+        self.assertEqual(analogrun.main(['data', 'clear', '/projects/1', str(out / 'b.bin'), '--yes']), 0)
+
+    def test_marker_path(self):
+        self.assertTrue(testrules.marker_path().endswith(os.path.join('analoghealth', 'test-session-rules')))
 
 
 class RulesTest(unittest.TestCase):

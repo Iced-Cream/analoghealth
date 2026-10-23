@@ -49,8 +49,10 @@ the kit being edited (--work-kit), 6A the pattern being edited
 dump it receives in the slot the dump names at any time, and reloads it when
 that slot is the active kit, so a round trip needs no menu on the unit.
 
-Test-session rules (testrules.py; there is no switch to turn them off):
-writes, renames and clears go only to items named `~T ...` or to empty
+Test-session rules (testrules.py), only on a computer set up as a shared test
+rig (the file test-session-rules in %LOCALAPPDATA%\\analoghealth, or
+~/.config/analoghealth); there they cannot be switched off: writes, renames
+and clears go only to items named `~T ...` or to empty
 slots, which get a `~T` name in the same command (--name); empty project
 slots only in 121-128; a kit or sound dump is sent only while the active
 project is a test project, which names its kit 1 `~T ...`. The key-driven
@@ -225,6 +227,8 @@ class Session:
                 time.sleep(0.5)
             mark(self, path, name)
             print('  %s saved, named %r' % (path, name))
+            if not testrules.enforced():
+                return
             # SAVE PROJECT AS makes the saved copy the active project (seen on the
             # unit), so its kit 1 can be marked now: that is how later steps know a
             # test project is active.
@@ -236,7 +240,8 @@ class Session:
                 time.sleep(1.0)
             print('  its kit 1 is %r' % testrules.check_active_project(self))
         elif op == 'save-kit':
-            print('  active project kit 1: %r' % testrules.check_active_project(self))
+            if testrules.enforced():
+                print('  active project kit 1: %r' % testrules.check_active_project(self))
             self.key_steps(' '.join(a))
         elif op == 'say':
             print(' '.join(a))
@@ -324,7 +329,10 @@ def backup(s, path, out):
 
 
 def mark(s, path, name):
-    """Give a just-written item its ~T name and confirm it in the listing."""
+    """Give a just-written item its (~T) name and confirm it in the listing; no
+    name (off a test rig, none asked for): leave it as written."""
+    if name is None:
+        return
     testrules.rename(s.rpc, path, name)
     now, _ = testrules.target(s.rpc, path)
     if now != name:
@@ -437,7 +445,8 @@ def main(argv=None):
             print('%s: %d messages, %d bytes' % (args.out, len(msgs), sum(map(len, msgs))))
         elif args.cmd == 'kit-roundtrip':
             os.makedirs(args.dir, exist_ok=True)
-            print('active project kit 1: %r' % testrules.check_active_project(s))
+            if testrules.enforced():
+                print('active project kit 1: %r' % testrules.check_active_project(s))
             req = request
             first = s.capture(args.keys, req, wait=5.0 if req else 30.0)
             save_syx(os.path.join(args.dir, 'kit-out.syx'), first)
