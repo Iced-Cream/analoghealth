@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""rytmrun.py and elkrpc.py against a fake unit that answers Elektron's RPC
+"""analogrun.py and elkrpc.py against a fake unit that answers Elektron's RPC
 (Ping, SoftwareVersion, Screenshot, the data store) and sends a dump when
 asked: no MIDI device is opened, and no key session (that is test_keys.py)."""
 from pathlib import Path
@@ -13,10 +13,10 @@ import zlib
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
 import elkrpc
-import rytmrun
+import analogrun
 from analogusb import pack7, unpack7
 
-DUMP_REQUEST = rytmrun.dump_request(rytmrun.KIT_REQUEST, 0)
+DUMP_REQUEST = analogrun.dump_request(analogrun.KIT_REQUEST, 0)
 KIT = [bytes.fromhex('F0 00 20 3C 07 00 52 01 02 03 F7'), bytes.fromhex('F0 00 20 3C 07 00 52 04 F7')]
 
 
@@ -164,7 +164,7 @@ class SessionTest(unittest.TestCase):
     def setUp(self):
         self.unit = FakeUnit()
         self.tmp = tempfile.TemporaryDirectory()
-        self.s = rytmrun.Session(self.unit, self.tmp.name)
+        self.s = analogrun.Session(self.unit, self.tmp.name)
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -215,57 +215,57 @@ class SessionTest(unittest.TestCase):
         self.assertEqual(msgs, KIT)
 
     def test_dump_request_layout(self):
-        self.assertEqual(rytmrun.dump_request(0x62, 5).hex(' '),
+        self.assertEqual(analogrun.dump_request(0x62, 5).hex(' '),
                          'f0 00 20 3c 07 00 62 01 01 05 00 00 00 05 f7')
         with self.assertRaises(ValueError):
-            rytmrun.dump_request(0x62, 128)
+            analogrun.dump_request(0x62, 128)
 
     def test_kit_roundtrip_command(self):
         unit = self.unit
 
         class Port(FakeUnit):
-            def __new__(cls):
+            def __new__(cls, *_name):
                 return unit
-        saved, rytmrun.open_port = rytmrun.open_port, Port
-        self.addCleanup(setattr, rytmrun, 'open_port', saved)
+        saved, analogrun.open_port = analogrun.open_port, Port
+        self.addCleanup(setattr, analogrun, 'open_port', saved)
         out = Path(self.tmp.name, 'kit')
-        self.assertEqual(rytmrun.main(['kit-roundtrip', str(out), '--kit', '0', '--settle', '0']), 0)
-        self.assertEqual(rytmrun.load_syx(out / 'kit-back.syx'), KIT)
+        self.assertEqual(analogrun.main(['kit-roundtrip', str(out), '--kit', '0', '--settle', '0']), 0)
+        self.assertEqual(analogrun.load_syx(out / 'kit-back.syx'), KIT)
         unit.mangle = True
-        self.assertEqual(rytmrun.main(['kit-roundtrip', str(out), '--kit', '0', '--settle', '0']), 1)
+        self.assertEqual(analogrun.main(['kit-roundtrip', str(out), '--kit', '0', '--settle', '0']), 1)
         with self.assertRaises(SystemExit):
-            rytmrun.main(['kit-roundtrip', str(out)])
+            analogrun.main(['kit-roundtrip', str(out)])
 
     def test_syx_files_and_compare(self):
         path = Path(self.tmp.name, 'k.syx')
-        rytmrun.save_syx(path, KIT)
-        self.assertEqual(rytmrun.load_syx(path), KIT)
-        self.assertEqual(rytmrun.compare(KIT, KIT), [])
-        self.assertEqual(rytmrun.compare(KIT, [KIT[0], KIT[1][:-2] + b'\x05\xF7']), [(1, 7)])
+        analogrun.save_syx(path, KIT)
+        self.assertEqual(analogrun.load_syx(path), KIT)
+        self.assertEqual(analogrun.compare(KIT, KIT), [])
+        self.assertEqual(analogrun.compare(KIT, [KIT[0], KIT[1][:-2] + b'\x05\xF7']), [(1, 7)])
 
     def test_data_roundtrip_command(self):
         unit = self.unit
 
         class Port(FakeUnit):
-            def __new__(cls):
+            def __new__(cls, *_name):
                 return unit
-        saved, rytmrun.open_port = rytmrun.open_port, Port
-        self.addCleanup(setattr, rytmrun, 'open_port', saved)
+        saved, analogrun.open_port = analogrun.open_port, Port
+        self.addCleanup(setattr, analogrun, 'open_port', saved)
         out = Path(self.tmp.name, 'rt')
-        self.assertEqual(rytmrun.main(['data', 'roundtrip', '/projects/1', str(out),
+        self.assertEqual(analogrun.main(['data', 'roundtrip', '/projects/1', str(out),
                                        '--to', '/projects/5', '--yes']), 0)
         self.assertEqual(unit.store['/projects/5'], unit.store['/projects/1'])
         unit.mangle = True
-        self.assertEqual(rytmrun.main(['data', 'roundtrip', '/projects/1', str(out),
+        self.assertEqual(analogrun.main(['data', 'roundtrip', '/projects/1', str(out),
                                        '--to', '/projects/6', '--yes']), 1)
         with self.assertRaises(SystemExit):
-            rytmrun.main(['data', 'put', '/projects/1', 'x.bin'])
+            analogrun.main(['data', 'put', '/projects/1', 'x.bin'])
         backup = Path(self.tmp.name, 'p5.bin')
-        self.assertEqual(rytmrun.main(['data', 'clear', '/projects/5', str(backup), '--yes']), 0)
+        self.assertEqual(analogrun.main(['data', 'clear', '/projects/5', str(backup), '--yes']), 0)
         self.assertNotIn('/projects/5', unit.store)
         self.assertEqual(backup.read_bytes(), unit.store['/projects/1'])
         with self.assertRaises(SystemExit):
-            rytmrun.main(['data', 'clear', '/projects/1', str(backup)])
+            analogrun.main(['data', 'clear', '/projects/1', str(backup)])
 
 
 if __name__ == '__main__':

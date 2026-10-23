@@ -181,7 +181,7 @@ python -m elekloader.lint out/analoghealth-1.2.elemod --stock Analog-Rytm_MKII_O
 | `remote_keys.c`, `remote_keys.s`, `remote_keys.h` | the bounded key mailbox, UI tick and clock |
 | `keys-ar2.def`, `keys-a4.def`, `tools/keymap.py` | key names and their OS key codes; the firmware finds each key on the panel from the unit's own table |
 | `tools/analogusb.py`, `tools/winmidi.py`, `tools/midimido.py` | the diagnostics and key client, and its MIDI transports |
-| `tools/rytmrun.py`, `tools/elkrpc.py` | the Rytm test runner and Elektron RPC client (host tools) |
+| `tools/analogrun.py`, `tools/elkrpc.py` | the test runner and Elektron RPC client (host tools) |
 | `tests/` | the host tests (`tests/fixtures/remote_keys_host.c` builds the C for either device) |
 
 ### How the port was made

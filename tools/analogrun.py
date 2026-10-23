@@ -1,19 +1,21 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""One program on the Rytm's USB MIDI port: keys, screenshots, notes and CCs,
+"""One program on a unit's USB MIDI port: keys, screenshots, notes and CCs,
 SysEx dumps and the data store, in one session, so a step can look at the
-screen while a key is held.
+screen while a key is held. The Analog Rytm MKII by default; --port NAME
+(before the command) picks another unit, e.g. --port "Analog Four". The kit
+and pattern dump commands speak the Rytm's SysEx and are for the Rytm only.
 
-    python rytmrun.py shot OUT.png [--scale N]       the screen now (stock OS too)
-    python rytmrun.py run SCRIPT [--out DIR]         steps from a file ('-' = stdin)
-    python rytmrun.py do 'hold FUNC; shot f.png; release FUNC'
-    python rytmrun.py dump-capture OUT.syx [--kit N | --work-kit | --work-pattern | --keys SEQ | --request HEX] [--quiet S]
-    python rytmrun.py kit-roundtrip DIR --kit N      dump kit N, send it back, dump again
-    python rytmrun.py info                           product, OS version
-    python rytmrun.py data ls PATH
-    python rytmrun.py data get PATH OUT
-    python rytmrun.py data put PATH IN --yes         replaces the object on the unit
-    python rytmrun.py data roundtrip PATH DIR [--to PATH2] --yes
-    python rytmrun.py data clear PATH BACKUP --yes   empties the slot (saves it to BACKUP first)
+    python analogrun.py shot OUT.png [--scale N]       the screen now (stock OS too)
+    python analogrun.py run SCRIPT [--out DIR]         steps from a file ('-' = stdin)
+    python analogrun.py do 'hold FUNC; shot f.png; release FUNC'
+    python analogrun.py dump-capture OUT.syx [--kit N | --work-kit | --work-pattern | --keys SEQ | --request HEX] [--quiet S]
+    python analogrun.py kit-roundtrip DIR --kit N      dump kit N, send it back, dump again
+    python analogrun.py info                           product, OS version
+    python analogrun.py data ls PATH
+    python analogrun.py data get PATH OUT
+    python analogrun.py data put PATH IN --yes         replaces the object on the unit
+    python analogrun.py data roundtrip PATH DIR [--to PATH2] --yes
+    python analogrun.py data clear PATH BACKUP --yes   empties the slot (saves it to BACKUP first)
 
 Steps (one per line or separated by ';'; '#' starts a comment):
 
@@ -280,12 +282,12 @@ def backup(s, path, out):
         print('%s holds nothing to back up' % path)
 
 
-def open_port():
+def open_port(name='Analog Rytm'):
     if sys.platform == 'win32':
         from winmidi import Port
     else:
         from midimido import Port
-    return Port('Analog Rytm')
+    return Port(name)
 
 
 def progress(frac):
@@ -293,9 +295,11 @@ def progress(frac):
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(prog='rytmrun.py', description=__doc__.split('\n')[0],
+    ap = argparse.ArgumentParser(prog='analogrun.py', description=__doc__.split('\n')[0],
                                  formatter_class=argparse.RawDescriptionHelpFormatter,
                                  epilog=__doc__.split('\n', 1)[1])
+    ap.add_argument('--port', default='Analog Rytm',
+                    help='part of the unit\'s MIDI port name (default: Analog Rytm)')
     sub = ap.add_subparsers(dest='cmd', required=True)
     p = sub.add_parser('shot')
     p.add_argument('out')
@@ -351,7 +355,7 @@ def main(argv=None):
         if args.cmd == 'kit-roundtrip' and not (request or args.keys):
             ap.error('kit-roundtrip needs --kit N (or --keys / --request)')
 
-    port = open_port()
+    port = open_port(args.port)
     s = Session(port, getattr(args, 'out', '.'))
     try:
         if args.cmd == 'shot':
