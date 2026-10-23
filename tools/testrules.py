@@ -100,6 +100,18 @@ def kit_name(dump):
     return body[4:20].split(b'\0')[0].decode('ascii', 'replace').rstrip()
 
 
+def renamed_kit_dump(dump, name):
+    """A kit dump with a new name (body bytes 4-19) and its checksum redone: the
+    sum of the 7-bit data bytes, & 0x3FFF, in the two bytes after the data."""
+    from analogusb import pack7, unpack7
+    kit_name(dump)                              # checks it is one
+    body = bytearray(unpack7(dump[10:-5]))
+    body[4:20] = name.encode('ascii').ljust(16, b'\0')[:16]
+    data = pack7(bytes(body))
+    cs = sum(data) & 0x3FFF
+    return dump[:10] + data + bytes([cs >> 7, cs & 0x7F]) + dump[-3:]
+
+
 def check_active_project(session):
     """The active project must be a test project: its kit 1 is named ~T."""
     from analogrun import KIT_REQUEST, dump_request   # the runner's dump request

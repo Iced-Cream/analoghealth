@@ -34,7 +34,8 @@ Steps (one per line or separated by ';'; '#' starts a comment):
     stats                 one analoghealth CPU/DSP/heap line
     dump ADDR LEN FILE    DDR to a file (analoghealth)
     send FILE.syx         send the SysEx messages in a file (e.g. a saved dump)
-    save-project N SEQ    key-driven SAVE PROJECT into slot N (keys SEQ), checked
+    save-project N NAME SEQ  key-driven SAVE PROJECT into slot N (keys SEQ, ending on the
+                          save), checked, then renamed NAME ('~T ...')
     save-kit SEQ          key-driven kit save (keys SEQ), checked
     say TEXT              print TEXT
 
@@ -211,15 +212,29 @@ class Session:
             self.send_dump(msgs)
             print('  sent %d messages, %d bytes' % (len(msgs), sum(map(len, msgs))))
         elif op == 'save-project':
+            # save-project N NAME SEQ: SEQ ends on the unit's save (its naming screen's
+            # YES); the new project is then renamed NAME over the data store.
             path = '/projects/%d' % num(a[0])
-            name, _ = testrules.target(self.rpc, path)
-            testrules.check_write(self.rpc, path, name if name else '~T CHECK')
-            self.key_steps(' '.join(a[1:]))
-            after, _ = testrules.target(self.rpc, path)
-            if not testrules.is_test_name(after):
-                raise testrules.RuleError('%s is now %r, not a ~T project: check the unit'
-                                          % (path, after))
-            print('  %s saved as %r' % (path, after))
+            name = testrules.check_write(self.rpc, path, a[1])
+            self.key_steps(' '.join(a[2:]))
+            end = time.monotonic() + 15
+            while testrules.target(self.rpc, path)[0] is None:
+                if time.monotonic() > end:
+                    raise testrules.RuleError('%s still empty 15 s after the keys: check the unit'
+                                              % path)
+                time.sleep(0.5)
+            mark(self, path, name)
+            print('  %s saved, named %r' % (path, name))
+            # SAVE PROJECT AS makes the saved copy the active project (seen on the
+            # unit), so its kit 1 can be marked now: that is how later steps know a
+            # test project is active.
+            kit = self.capture(request=dump_request(KIT_REQUEST, 0), wait=5.0, quiet=0.5)[0]
+            old = testrules.kit_name(kit)
+            if not testrules.is_test_name(old):
+                new = testrules.check_new_name(('~T ' + (old or 'KIT 1'))[:testrules.NAME_MAX])
+                self.send_dump([testrules.renamed_kit_dump(kit, new)])
+                time.sleep(1.0)
+            print('  its kit 1 is %r' % testrules.check_active_project(self))
         elif op == 'save-kit':
             print('  active project kit 1: %r' % testrules.check_active_project(self))
             self.key_steps(' '.join(a))

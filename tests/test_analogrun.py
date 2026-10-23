@@ -358,6 +358,16 @@ class RulesTest(unittest.TestCase):
             with self.assertRaises(testrules.RuleError):
                 testrules.split_path(bad)
 
+    def test_renamed_kit_dump(self):
+        dump = make_kit('KIT 1')
+        data = dump[10:-5]
+        dump = dump[:10] + data + bytes([(sum(data) & 0x3FFF) >> 7, sum(data) & 0x7F]) + dump[-3:]
+        new = testrules.renamed_kit_dump(dump, '~T KIT 1')
+        self.assertEqual(testrules.kit_name(new), '~T KIT 1')
+        cs = sum(new[10:-5]) & 0x3FFF
+        self.assertEqual((new[-5] << 7) | new[-4], cs)
+        self.assertEqual(new[-3:], dump[-3:])
+
     def test_kit_name(self):
         self.assertEqual(testrules.kit_name(make_kit('~T KIT 1')), '~T KIT 1')
         with self.assertRaises(testrules.RuleError):
