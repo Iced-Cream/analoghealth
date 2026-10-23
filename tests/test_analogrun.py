@@ -14,10 +14,20 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
 import elkrpc
 import analogrun
+import testrules
 from analogusb import pack7, unpack7
 
 DUMP_REQUEST = analogrun.dump_request(analogrun.KIT_REQUEST, 0)
-KIT = [bytes.fromhex('F0 00 20 3C 07 00 52 01 02 03 F7'), bytes.fromhex('F0 00 20 3C 07 00 52 04 F7')]
+
+
+def make_kit(name, number=0):
+    """A kit dump: its body holds the name at bytes 4-19."""
+    body = bytes(4) + name.encode().ljust(16, b'\0') + bytes(range(40))
+    return (bytes([0xF0, 0x00, 0x20, 0x3C, 0x07, 0x00, 0x52, 0x01, 0x01, number]) + pack7(body)
+            + bytes([0x00, 0x00, 0x00, 0x05, 0xF7]))
+
+
+KIT = [make_kit('~T KIT 1')]
 
 
 class FakeUnit:
@@ -26,6 +36,7 @@ class FakeUnit:
     def __init__(self, block=0x2000):
         self.pending, self.short, self.seq = [], [], 0x4000
         self.store = {'/projects/1': bytes(range(256)) * 50}
+        self.names = {'/projects/1': 'MY SONG'}
         self.jobs = {}
         self.block = block
         self.mangle = False
@@ -46,6 +57,7 @@ class FakeUnit:
                 self.incoming = kit if len(kit) < len(KIT) else []
                 if len(kit) == len(KIT):
                     self.kit = [kit[0][:-2] + b'\x7F\xF7'] + kit[1:] if self.mangle else kit
+                    self.received_kits = getattr(self, 'received_kits', 0) + 1
             return
         msg = unpack7(data[6:-1])
         seq, _, cmd = struct.unpack_from('>HHB', msg)
@@ -79,7 +91,7 @@ class FakeUnit:
             out = b'\x01' + bytes(12)
             for name, data in sorted(self.store.items()):
                 if name.startswith(path + '/'):
-                    out += (name[len(path) + 1:].encode() + b'\0' + bytes([0, 2])
+                    out += (self.names.get(name, 'NEW').encode() + b'\0' + bytes([0, 2])
                             + struct.pack('>iIHBB', int(name.rsplit('/', 1)[1]), len(data), 7, 1, 0))
             return out
         if cmd == elkrpc.DATA_READ_OPEN:
@@ -113,11 +125,18 @@ class FakeUnit:
             buf = self.jobs[job][2]
             buf += block
             return b'\x01' + struct.pack('>III', job, seq, len(buf))
+        if cmd == testrules.DATA_RENAME:
+            path, name = a.split(b'\0')[:2]
+            if path.decode() not in self.store:
+                return bytes([0]) + b'Rename: Not a saved project\0'
+            self.names[path.decode()] = name.decode()
+            return bytes([1])
         if cmd == elkrpc.DATA_CLEAR:
             path = a[:a.index(0)].decode()
+            self.names.pop(path, None)
             if self.store.pop(path, None) is None:
                 return b'\0empty\0'
-            return b''
+            return bytes([1])
         if cmd == elkrpc.DATA_WRITE_CLOSE:
             job, size = struct.unpack('>II', a)
             _, path, buf, _ = self.jobs[job]
@@ -235,13 +254,30 @@ class SessionTest(unittest.TestCase):
         self.assertEqual(analogrun.main(['kit-roundtrip', str(out), '--kit', '0', '--settle', '0']), 1)
         with self.assertRaises(SystemExit):
             analogrun.main(['kit-roundtrip', str(out)])
+        # The person's project is active (its kit 1 is not ~T): no kit goes to the unit.
+        unit.kit, unit.mangle, unit.received_kits = [make_kit('KIT A')], False, 0
+        self.assertEqual(analogrun.main(['kit-roundtrip', str(out), '--kit', '0', '--settle', '0']), 2)
+        self.assertEqual(unit.received_kits, 0)
+
+    def test_send_step_checks_the_active_project(self):
+        path = Path(self.tmp.name, 'k.syx')
+        analogrun.save_syx(path, [make_kit('~T KIT 1', 5)])
+        self.unit.kit = [make_kit('KIT A')]
+        with self.assertRaises(testrules.RuleError):
+            self.s.step('send k.syx')
+        self.assertEqual(getattr(self.unit, 'received_kits', 0), 0)
+        self.unit.kit = [make_kit('~T KIT 1')]
+        self.s.step('send k.syx')
+        self.assertEqual(self.unit.received_kits, 1)
 
     def test_syx_files_and_compare(self):
+        two = [KIT[0], make_kit('X', 1)]
         path = Path(self.tmp.name, 'k.syx')
-        analogrun.save_syx(path, KIT)
-        self.assertEqual(analogrun.load_syx(path), KIT)
-        self.assertEqual(analogrun.compare(KIT, KIT), [])
-        self.assertEqual(analogrun.compare(KIT, [KIT[0], KIT[1][:-2] + b'\x05\xF7']), [(1, 7)])
+        analogrun.save_syx(path, two)
+        self.assertEqual(analogrun.load_syx(path), two)
+        self.assertEqual(analogrun.compare(two, two), [])
+        self.assertEqual(analogrun.compare(two, [two[0], two[1][:-2] + b'\x06\xF7']),
+                         [(1, len(two[1]) - 2)])
 
     def test_data_roundtrip_command(self):
         unit = self.unit
@@ -252,20 +288,64 @@ class SessionTest(unittest.TestCase):
         saved, analogrun.open_port = analogrun.open_port, Port
         self.addCleanup(setattr, analogrun, 'open_port', saved)
         out = Path(self.tmp.name, 'rt')
-        self.assertEqual(analogrun.main(['data', 'roundtrip', '/projects/1', str(out),
-                                       '--to', '/projects/5', '--yes']), 0)
-        self.assertEqual(unit.store['/projects/5'], unit.store['/projects/1'])
+        run = lambda *a: analogrun.main(['data', *a])
+        # Empty slots outside 121-128, and empty slots without a ~T name: refused.
+        self.assertEqual(run('roundtrip', '/projects/1', str(out), '--to', '/projects/5', '--yes'), 2)
+        self.assertEqual(run('roundtrip', '/projects/1', str(out), '--to', '/projects/121', '--yes'), 2)
+        self.assertNotIn('/projects/121', unit.store)
+        # Into an empty test slot, named ~T in the same command.
+        self.assertEqual(run('roundtrip', '/projects/1', str(out), '--to', '/projects/121',
+                             '--name', '~t copy', '--yes'), 0)
+        self.assertEqual(unit.store['/projects/121'], unit.store['/projects/1'])
+        self.assertEqual(unit.names['/projects/121'], '~T COPY')
+        # A ~T item keeps its name; the person's project is never a target.
+        self.assertEqual(run('roundtrip', '/projects/1', str(out), '--to', '/projects/121', '--yes'), 0)
+        self.assertEqual(unit.names['/projects/121'], '~T COPY')
+        self.assertEqual(run('roundtrip', '/projects/1', str(out), '--yes'), 2)
+        self.assertEqual(run('roundtrip', '/projects/121', str(out), '--to', '/projects/1', '--yes'), 2)
+        self.assertEqual(run('roundtrip', '/projects/1', str(out), '--to', '/projects/122',
+                             '--name', 'COPY', '--yes'), 2)
         unit.mangle = True
-        self.assertEqual(analogrun.main(['data', 'roundtrip', '/projects/1', str(out),
-                                       '--to', '/projects/6', '--yes']), 1)
+        self.assertEqual(run('roundtrip', '/projects/1', str(out), '--to', '/projects/122',
+                             '--name', '~T BAD', '--yes'), 1)
+        unit.mangle = False
         with self.assertRaises(SystemExit):
-            analogrun.main(['data', 'put', '/projects/1', 'x.bin'])
-        backup = Path(self.tmp.name, 'p5.bin')
-        self.assertEqual(analogrun.main(['data', 'clear', '/projects/5', str(backup), '--yes']), 0)
-        self.assertNotIn('/projects/5', unit.store)
-        self.assertEqual(backup.read_bytes(), unit.store['/projects/1'])
+            run('put', '/projects/121', 'x.bin')
+        src = Path(self.tmp.name, 'p.bin')
+        src.write_bytes(bytes(100))
+        self.assertEqual(run('put', '/projects/1', str(src), '--yes'), 2)
+        self.assertEqual(unit.store['/projects/1'], bytes(range(256)) * 50)
+        self.assertEqual(run('put', '/projects/121', str(src), '--yes'), 0)
+        self.assertEqual((unit.store['/projects/121'], unit.names['/projects/121']), (bytes(100), '~T COPY'))
+        backup = Path(self.tmp.name, 'p121.bin')
+        self.assertEqual(run('clear', '/projects/1', str(backup), '--yes'), 2)
+        self.assertIn('/projects/1', unit.store)
+        self.assertEqual(run('clear', '/projects/121', str(backup), '--yes'), 0)
+        self.assertNotIn('/projects/121', unit.store)
+        self.assertEqual(backup.read_bytes(), bytes(100))
         with self.assertRaises(SystemExit):
-            analogrun.main(['data', 'clear', '/projects/1', str(backup)])
+            run('clear', '/projects/1', str(backup))
+
+
+class RulesTest(unittest.TestCase):
+    def test_names(self):
+        self.assertEqual(testrules.check_new_name('~t kit a'), '~T KIT A')
+        for bad in ('KIT A', '~T', '~T ', '~T ' + 'X' * 13, '~T K_1', '~TKIT'):
+            with self.assertRaises(testrules.RuleError):
+                testrules.check_new_name(bad)
+        self.assertTrue(testrules.is_test_name('~T X'))
+        self.assertFalse(testrules.is_test_name('T X'))
+
+    def test_paths(self):
+        self.assertEqual(testrules.split_path('/soundbanks/C/7'), ('/soundbanks/C', 7))
+        for bad in ('/samples/x', '/projects', '/projects/a', '/soundbanks/Q/1'):
+            with self.assertRaises(testrules.RuleError):
+                testrules.split_path(bad)
+
+    def test_kit_name(self):
+        self.assertEqual(testrules.kit_name(make_kit('~T KIT 1')), '~T KIT 1')
+        with self.assertRaises(testrules.RuleError):
+            testrules.kit_name(b'\xF0\x7E\xF7')
 
 
 if __name__ == '__main__':

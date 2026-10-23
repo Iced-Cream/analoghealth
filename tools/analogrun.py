@@ -13,9 +13,9 @@ and pattern dump commands speak the Rytm's SysEx and are for the Rytm only.
     python analogrun.py info                           product, OS version
     python analogrun.py data ls PATH
     python analogrun.py data get PATH OUT
-    python analogrun.py data put PATH IN --yes         replaces the object on the unit
-    python analogrun.py data roundtrip PATH DIR [--to PATH2] --yes
-    python analogrun.py data clear PATH BACKUP --yes   empties the slot (saves it to BACKUP first)
+    python analogrun.py data put PATH IN [--name '~T X'] --yes   replaces a test item
+    python analogrun.py data roundtrip PATH DIR [--to PATH2] [--name '~T X'] --yes
+    python analogrun.py data clear PATH BACKUP --yes   empties a test item (saves it first)
 
 Steps (one per line or separated by ';'; '#' starts a comment):
 
@@ -33,6 +33,8 @@ Steps (one per line or separated by ';'; '#' starts a comment):
     stats                 one analoghealth CPU/DSP/heap line
     dump ADDR LEN FILE    DDR to a file (analoghealth)
     send FILE.syx         send the SysEx messages in a file (e.g. a saved dump)
+    save-project N SEQ    key-driven SAVE PROJECT into slot N (keys SEQ), checked
+    save-kit SEQ          key-driven kit save (keys SEQ), checked
     say TEXT              print TEXT
 
 Kit dumps: the OS answers a dump request
@@ -44,6 +46,13 @@ the kit being edited (--work-kit), 6A the pattern being edited
 (--work-pattern); the number is not used for the last two. It stores a kit
 dump it receives in the slot the dump names at any time, and reloads it when
 that slot is the active kit, so a round trip needs no menu on the unit.
+
+Test-session rules (testrules.py; there is no switch to turn them off):
+writes, renames and clears go only to items named `~T ...` or to empty
+slots, which get a `~T` name in the same command (--name); empty project
+slots only in 121-128; a kit or sound dump is sent only while the active
+project is a test project, which names its kit 1 `~T ...`. The key-driven
+save steps check their target the same way and confirm it afterwards.
 
 Key steps open a analoghealth key session on first use and close it (releasing
 any synthetic key) at the end; everything else works on a stock OS. Each
@@ -58,6 +67,7 @@ import sys
 import time
 
 import elkrpc
+import testrules
 from analogusb import Diag, RemoteKeys, decode_stats, key_sequence, peek, req_stats
 
 ELEKTRON = bytes([0xF0, 0x00, 0x20, 0x3C])
@@ -195,8 +205,23 @@ class Session:
                 fh.write(data)
         elif op == 'send':
             msgs = load_syx(self.path(a[0]))
+            if any(testrules.is_kit_dump(m) for m in msgs):
+                testrules.check_active_project(self)
             self.send_dump(msgs)
             print('  sent %d messages, %d bytes' % (len(msgs), sum(map(len, msgs))))
+        elif op == 'save-project':
+            path = '/projects/%d' % num(a[0])
+            name, _ = testrules.target(self.rpc, path)
+            testrules.check_write(self.rpc, path, name if name else '~T CHECK')
+            self.key_steps(' '.join(a[1:]))
+            after, _ = testrules.target(self.rpc, path)
+            if not testrules.is_test_name(after):
+                raise testrules.RuleError('%s is now %r, not a ~T project: check the unit'
+                                          % (path, after))
+            print('  %s saved as %r' % (path, after))
+        elif op == 'save-kit':
+            print('  active project kit 1: %r' % testrules.check_active_project(self))
+            self.key_steps(' '.join(a))
         elif op == 'say':
             print(' '.join(a))
         else:
@@ -282,6 +307,14 @@ def backup(s, path, out):
         print('%s holds nothing to back up' % path)
 
 
+def mark(s, path, name):
+    """Give a just-written item its ~T name and confirm it in the listing."""
+    testrules.rename(s.rpc, path, name)
+    now, _ = testrules.target(s.rpc, path)
+    if now != name:
+        raise testrules.RuleError('%s should be named %r but lists as %r' % (path, name, now))
+
+
 def open_port(name='Analog Rytm'):
     if sys.platform == 'win32':
         from winmidi import Port
@@ -332,6 +365,7 @@ def main(argv=None):
     p.add_argument('path')
     p.add_argument('file', nargs='?')
     p.add_argument('--to', help='roundtrip: write to this path instead of PATH')
+    p.add_argument('--name', help="the target's new name, '~T ...' (needed for an empty slot)")
     p.add_argument('--yes', action='store_true', help='put/roundtrip/clear: allow replacing or emptying the object')
     args = ap.parse_args(argv)
 
@@ -381,6 +415,7 @@ def main(argv=None):
             print('%s: %d messages, %d bytes' % (args.out, len(msgs), sum(map(len, msgs))))
         elif args.cmd == 'kit-roundtrip':
             os.makedirs(args.dir, exist_ok=True)
+            print('active project kit 1: %r' % testrules.check_active_project(s))
             req = request
             first = s.capture(args.keys, req, wait=5.0 if req else 30.0)
             save_syx(os.path.join(args.dir, 'kit-out.syx'), first)
@@ -413,38 +448,53 @@ def main(argv=None):
                     fh.write(data)
                 print('\n%s: %d bytes' % (args.file, len(data)))
             elif args.op == 'clear':
+                name, _ = testrules.target(s.rpc, args.path)
+                if name is None:
+                    print('%s is already empty' % args.path)
+                    return 0
+                testrules.check_write(s.rpc, args.path)
                 backup(s, args.path, args.file)
                 s.rpc.data_clear(args.path)
                 print('cleared %s' % args.path)
             elif args.op == 'put':
                 with open(args.file, 'rb') as fh:
                     data = fh.read()
+                name = testrules.check_write(s.rpc, args.path, args.name)
                 backup(s, args.path, args.file + '.before.bin')
                 s.rpc.data_write(args.path, data, progress=progress)
-                print('\nwrote %d bytes to %s' % (len(data), args.path))
+                mark(s, args.path, name)
+                print('\nwrote %d bytes to %s, named %r' % (len(data), args.path, name))
             else:
                 os.makedirs(args.file, exist_ok=True)
                 to = args.to or args.path
                 data = s.rpc.data_read(args.path, progress=progress)
                 save(os.path.join(args.file, 'out.bin'), data)
                 print('\nread %s: %d bytes' % (args.path, len(data)))
+                name = testrules.check_write(s.rpc, to, args.name)
                 if to != args.path:
                     backup(s, to, os.path.join(args.file, 'target-before.bin'))
                 s.rpc.data_write(to, data, progress=progress)
-                print('\nwrote %s' % to)
-                back = s.rpc.data_read(to, progress=progress)
+                # Read back before the rename: renaming rewrites the stored image.
+                try:
+                    back = s.rpc.data_read(to, progress=progress)
+                finally:
+                    mark(s, to, name)
+                print('\nwrote %s, named %r' % (to, name))
                 save(os.path.join(args.file, 'back.bin'), back)
-                if back != data:
+                expected = {0x18}               # the slot number, which the unit rewrites
+                if len(back) != len(data) or any(
+                        x != y for i, (x, y) in enumerate(zip(data, back)) if i not in expected):
                     n = sum(x != y for x, y in zip(back, data)) + abs(len(back) - len(data))
                     at = [i for i, (x, y) in enumerate(zip(data, back)) if x != y][:8]
                     print('\nFAIL: %s read back %d bytes, %d differ: %s' % (to, len(back), n, ', '.join(
                         '0x%x %02x->%02x' % (i, data[i], back[i]) for i in at)))
-                    if to != args.path:
-                        print('  (a project read from another slot carries its own slot number; '
-                              'on the Rytm that is byte 0x18)')
                     return 1
-                print('\nPASS: %s read back byte-identical (%d bytes)' % (to, len(back)))
+                print('\nPASS: %s read back identical (%d bytes) apart from its slot number, '
+                      'then named %r' % (to, len(back), name))
         return 0
+    except testrules.RuleError as e:
+        print('\nrefused (test-session rules): %s' % e)
+        return 2
     finally:
         try:
             s.close()
