@@ -65,8 +65,13 @@ def check_new_name(name):
 
 
 def split_path(path):
-    """'/projects/121' -> ('/projects', 121); '/soundbanks/A/5' -> ('/soundbanks/A', 5)."""
+    """'/projects/121' -> ('/projects', 121); '/soundbanks/A/5' -> ('/soundbanks/A', 5).
+    Off a test rig any '/DIR/N' path is accepted."""
     m = re.fullmatch(r'(/projects|/soundbanks/[A-P])/(\d+)', path)
+    if not m and not enforced():
+        m = re.fullmatch(r'(/.+)/(\d+)', path)
+        if not m:
+            raise RuleError('expected a path to a numbered slot, /DIR/N, not %r' % path)
     if not m:
         raise RuleError('test sessions may write only /projects/N and /soundbanks/X/N, not %r' % path)
     return m.group(1), int(m.group(2))

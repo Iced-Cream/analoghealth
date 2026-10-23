@@ -377,6 +377,11 @@ class OffRigTest(unittest.TestCase):
         self.assertEqual(analogrun.main(['kit-roundtrip', str(out), '--kit', '0', '--settle', '0']), 0)
         self.assertEqual(analogrun.main(['data', 'clear', '/projects/1', str(out / 'b.bin'), '--yes']), 0)
 
+    def test_any_numbered_path(self):
+        self.assertEqual(testrules.split_path('/patterns/3'), ('/patterns', 3))
+        with self.assertRaises(testrules.RuleError):
+            testrules.split_path('/projects')
+
     def test_marker_path(self):
         self.assertTrue(testrules.marker_path().endswith(os.path.join('analoghealth', 'test-session-rules')))
 
