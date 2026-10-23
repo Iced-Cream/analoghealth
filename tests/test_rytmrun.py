@@ -113,6 +113,11 @@ class FakeUnit:
             buf = self.jobs[job][2]
             buf += block
             return b'\x01' + struct.pack('>III', job, seq, len(buf))
+        if cmd == elkrpc.DATA_CLEAR:
+            path = a[:a.index(0)].decode()
+            if self.store.pop(path, None) is None:
+                return b'\0empty\0'
+            return b''
         if cmd == elkrpc.DATA_WRITE_CLOSE:
             job, size = struct.unpack('>II', a)
             _, path, buf, _ = self.jobs[job]
@@ -255,6 +260,12 @@ class SessionTest(unittest.TestCase):
                                        '--to', '/projects/6', '--yes']), 1)
         with self.assertRaises(SystemExit):
             rytmrun.main(['data', 'put', '/projects/1', 'x.bin'])
+        backup = Path(self.tmp.name, 'p5.bin')
+        self.assertEqual(rytmrun.main(['data', 'clear', '/projects/5', str(backup), '--yes']), 0)
+        self.assertNotIn('/projects/5', unit.store)
+        self.assertEqual(backup.read_bytes(), unit.store['/projects/1'])
+        with self.assertRaises(SystemExit):
+            rytmrun.main(['data', 'clear', '/projects/1', str(backup)])
 
 
 if __name__ == '__main__':

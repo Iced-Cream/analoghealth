@@ -21,6 +21,7 @@ HEADER = bytes([0xF0, 0x00, 0x20, 0x3C, 0x10, 0x00])
 PING, VERSION, SCREENSHOT = 0x01, 0x02, 0x04
 DATA_LIST, DATA_READ_OPEN, DATA_READ_PARTIAL, DATA_READ_CLOSE = 0x53, 0x54, 0x55, 0x56
 DATA_WRITE_OPEN, DATA_WRITE_PARTIAL, DATA_WRITE_CLOSE = 0x57, 0x58, 0x59
+DATA_CLEAR = 0x5C
 BLOCK = 0x2000                # data store block, as elektroid
 
 
@@ -172,6 +173,11 @@ class Rpc:
         size, = struct.unpack_from('>I', a, 5)
         if size != len(data):
             raise RpcError('device stored %d bytes of %d' % (size, len(data)))
+
+
+    def data_clear(self, path, timeout=5.0):
+        """Empty the slot at `path` (DataClear: the path, reply u8 status)."""
+        self._ok(self.call(DATA_CLEAR, cstring(path), timeout), 'clear ' + path)
 
 
 class Screen:

@@ -13,6 +13,7 @@ screen while a key is held.
     python rytmrun.py data get PATH OUT
     python rytmrun.py data put PATH IN --yes         replaces the object on the unit
     python rytmrun.py data roundtrip PATH DIR [--to PATH2] --yes
+    python rytmrun.py data clear PATH BACKUP --yes   empties the slot (saves it to BACKUP first)
 
 Steps (one per line or separated by ';'; '#' starts a comment):
 
@@ -316,14 +317,14 @@ def main(argv=None):
     p.add_argument('--receive-keys', help='key sequence that readies the unit to receive, if needed')
     p.add_argument('--settle', type=float, default=2.0, help='s to wait after sending the kit back')
     p = sub.add_parser('data')
-    p.add_argument('op', choices=('ls', 'get', 'put', 'roundtrip'))
+    p.add_argument('op', choices=('ls', 'get', 'put', 'roundtrip', 'clear'))
     p.add_argument('path')
     p.add_argument('file', nargs='?')
     p.add_argument('--to', help='roundtrip: write to this path instead of PATH')
-    p.add_argument('--yes', action='store_true', help='put/roundtrip: allow replacing the object')
+    p.add_argument('--yes', action='store_true', help='put/roundtrip/clear: allow replacing or emptying the object')
     args = ap.parse_args(argv)
 
-    if args.cmd == 'data' and args.op in ('put', 'roundtrip') and not args.yes:
+    if args.cmd == 'data' and args.op in ('put', 'roundtrip', 'clear') and not args.yes:
         ap.error('data %s replaces the object on the unit: add --yes' % args.op)
     if args.cmd == 'data' and args.op != 'ls' and not args.file:
         ap.error('data %s needs a file or directory' % args.op)
@@ -398,6 +399,10 @@ def main(argv=None):
                 with open(args.file, 'wb') as fh:
                     fh.write(data)
                 print('\n%s: %d bytes' % (args.file, len(data)))
+            elif args.op == 'clear':
+                backup(s, args.path, args.file)
+                s.rpc.data_clear(args.path)
+                print('cleared %s' % args.path)
             elif args.op == 'put':
                 with open(args.file, 'rb') as fh:
                     data = fh.read()
