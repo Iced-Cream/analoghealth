@@ -418,7 +418,12 @@ def main(argv=None):
                 save(os.path.join(args.file, 'back.bin'), back)
                 if back != data:
                     n = sum(x != y for x, y in zip(back, data)) + abs(len(back) - len(data))
-                    print('\nFAIL: %s read back %d bytes, %d differ' % (to, len(back), n))
+                    at = [i for i, (x, y) in enumerate(zip(data, back)) if x != y][:8]
+                    print('\nFAIL: %s read back %d bytes, %d differ: %s' % (to, len(back), n, ', '.join(
+                        '0x%x %02x->%02x' % (i, data[i], back[i]) for i in at)))
+                    if to != args.path:
+                        print('  (a project read from another slot carries its own slot number; '
+                              'on the Rytm that is byte 0x18)')
                     return 1
                 print('\nPASS: %s read back byte-identical (%d bytes)' % (to, len(back)))
         return 0
