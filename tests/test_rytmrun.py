@@ -16,7 +16,7 @@ import elkrpc
 import rytmrun
 from rytmusb import pack7, unpack7
 
-DUMP_REQUEST = bytes.fromhex('F0 00 20 3C 07 00 62 F7')
+DUMP_REQUEST = rytmrun.dump_request(rytmrun.KIT_REQUEST, 0)
 KIT = [bytes.fromhex('F0 00 20 3C 07 00 52 01 02 03 F7'), bytes.fromhex('F0 00 20 3C 07 00 52 04 F7')]
 
 
@@ -37,12 +37,15 @@ class FakeUnit:
     def send(self, data):
         data = bytes(data)
         if data == DUMP_REQUEST:
-            self.pending += [bytes(m) for m in KIT]
+            self.pending += [bytes(m) for m in getattr(self, 'kit', KIT)]
             return
         r = elkrpc.parse(data)
         if r is None:
-            if data in KIT or (self.mangle and data[:7] == KIT[0][:7]):
-                self.received = getattr(self, 'received', []) + [data]
+            if data[:7] == KIT[0][:7]:              # a kit dump: stored at once
+                kit = getattr(self, 'incoming', []) + [data]
+                self.incoming = kit if len(kit) < len(KIT) else []
+                if len(kit) == len(KIT):
+                    self.kit = [kit[0][:-2] + b'\x7F\xF7'] + kit[1:] if self.mangle else kit
             return
         msg = unpack7(data[6:-1])
         seq, _, cmd = struct.unpack_from('>HHB', msg)
@@ -205,6 +208,28 @@ class SessionTest(unittest.TestCase):
     def test_dump_capture_keeps_messages_seen_during_other_requests(self):
         msgs = self.s.capture(request=DUMP_REQUEST, quiet=0.05)
         self.assertEqual(msgs, KIT)
+
+    def test_dump_request_layout(self):
+        self.assertEqual(rytmrun.dump_request(0x62, 5).hex(' '),
+                         'f0 00 20 3c 07 00 62 01 01 05 00 00 00 05 f7')
+        with self.assertRaises(ValueError):
+            rytmrun.dump_request(0x62, 128)
+
+    def test_kit_roundtrip_command(self):
+        unit = self.unit
+
+        class Port(FakeUnit):
+            def __new__(cls):
+                return unit
+        saved, rytmrun.open_port = rytmrun.open_port, Port
+        self.addCleanup(setattr, rytmrun, 'open_port', saved)
+        out = Path(self.tmp.name, 'kit')
+        self.assertEqual(rytmrun.main(['kit-roundtrip', str(out), '--kit', '0', '--settle', '0']), 0)
+        self.assertEqual(rytmrun.load_syx(out / 'kit-back.syx'), KIT)
+        unit.mangle = True
+        self.assertEqual(rytmrun.main(['kit-roundtrip', str(out), '--kit', '0', '--settle', '0']), 1)
+        with self.assertRaises(SystemExit):
+            rytmrun.main(['kit-roundtrip', str(out)])
 
     def test_syx_files_and_compare(self):
         path = Path(self.tmp.name, 'k.syx')

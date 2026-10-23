@@ -6,8 +6,8 @@ screen while a key is held.
     python rytmrun.py shot OUT.png [--scale N]       the screen now (stock OS too)
     python rytmrun.py run SCRIPT [--out DIR]         steps from a file ('-' = stdin)
     python rytmrun.py do 'hold FUNC; shot f.png; release FUNC'
-    python rytmrun.py dump-capture OUT.syx [--keys SEQ] [--request HEX] [--quiet S]
-    python rytmrun.py kit-roundtrip DIR --keys SEQ [--receive-keys SEQ] [--request HEX]
+    python rytmrun.py dump-capture OUT.syx [--kit N | --keys SEQ | --request HEX] [--quiet S]
+    python rytmrun.py kit-roundtrip DIR --kit N      dump kit N, send it back, dump again
     python rytmrun.py info                           product, OS version
     python rytmrun.py data ls PATH
     python rytmrun.py data get PATH OUT
@@ -31,6 +31,15 @@ Steps (one per line or separated by ';'; '#' starts a comment):
     dump ADDR LEN FILE    DDR to a file (rytmhealth)
     say TEXT              print TEXT
 
+Kit dumps: the OS answers a dump request
+
+    F0 00 20 3C 07 00 <id> 01 01 <number> 00 00 00 05 F7
+
+with the object as a dump (<id> - 0x10): 62 a saved kit 0-127 (--kit N), 6A
+the kit being edited (--work-kit; the number is not used). It stores a kit
+dump it receives in the slot the dump names at any time, and reloads it when
+that slot is the active kit, so a round trip needs no menu on the unit.
+
 Key steps open a rytmhealth key session on first use and close it (releasing
 any synthetic key) at the end; everything else works on a stock OS. Each
 command here is the only user of the port while it runs: close Transfer,
@@ -47,6 +56,15 @@ import elkrpc
 from rytmusb import Diag, RemoteKeys, decode_stats, key_sequence, peek, req_stats
 
 ELEKTRON = bytes([0xF0, 0x00, 0x20, 0x3C])
+KIT_REQUEST, WORK_KIT_REQUEST = 0x62, 0x6A
+
+
+def dump_request(kind, number=0):
+    """The Rytm's dump request: the object comes back as dump id kind - 0x10."""
+    if not 0 <= number < 128:
+        raise ValueError('number 0..127')
+    return bytes([0xF0, 0x00, 0x20, 0x3C, 0x07, 0x00, kind, 0x01, 0x01, number,
+                  0x00, 0x00, 0x00, 0x05, 0xF7])
 
 
 class Tap:
@@ -284,13 +302,16 @@ def main(argv=None):
     sub.add_parser('info')
     p = sub.add_parser('dump-capture')
     p.add_argument('out')
-    p.add_argument('--keys', help='key sequence that starts SYSEX SEND on the unit')
-    p.add_argument('--request', help='a dump request to send, as hex bytes')
+    p.add_argument('--kit', type=int, help='request saved kit N (0-127, kit 1 on the unit is 0)')
+    p.add_argument('--work-kit', action='store_true', help='request the kit being edited')
+    p.add_argument('--keys', help='or a key sequence that starts SYSEX SEND on the unit')
+    p.add_argument('--request', help='or any request, as hex bytes')
     p.add_argument('--wait', type=float, default=30.0)
     p.add_argument('--quiet', type=float, default=1.0, help='end of dump after S s without data')
     p = sub.add_parser('kit-roundtrip')
     p.add_argument('dir')
-    p.add_argument('--keys', help='key sequence that starts SYSEX SEND of the kit')
+    p.add_argument('--kit', type=int, help='saved kit N (0-127, kit 1 on the unit is 0)')
+    p.add_argument('--keys', help='or a key sequence that starts SYSEX SEND of the kit')
     p.add_argument('--request', help='or a dump request, as hex bytes')
     p.add_argument('--receive-keys', help='key sequence that readies the unit to receive, if needed')
     p.add_argument('--settle', type=float, default=2.0, help='s to wait after sending the kit back')
@@ -306,6 +327,19 @@ def main(argv=None):
         ap.error('data %s replaces the object on the unit: add --yes' % args.op)
     if args.cmd == 'data' and args.op != 'ls' and not args.file:
         ap.error('data %s needs a file or directory' % args.op)
+
+    request = None
+    if args.cmd in ('dump-capture', 'kit-roundtrip'):
+        if getattr(args, 'work_kit', False):
+            request = dump_request(WORK_KIT_REQUEST)
+        elif args.kit is not None:
+            if not 0 <= args.kit < 128:
+                ap.error('--kit is 0..127')
+            request = dump_request(KIT_REQUEST, args.kit)
+        elif args.request:
+            request = bytes.fromhex(args.request)
+        if args.cmd == 'kit-roundtrip' and not (request or args.keys):
+            ap.error('kit-roundtrip needs --kit N (or --keys / --request)')
 
     port = open_port()
     s = Session(port, getattr(args, 'out', '.'))
@@ -328,14 +362,13 @@ def main(argv=None):
             pid, name = s.rpc.ping()
             print('%s (product id 0x%02X), OS %s' % (name, pid, s.rpc.version()))
         elif args.cmd == 'dump-capture':
-            msgs = s.capture(args.keys, bytes.fromhex(args.request) if args.request else None,
-                             args.wait, args.quiet)
+            msgs = s.capture(args.keys, request, args.wait, args.quiet)
             save_syx(args.out, msgs)
             print('%s: %d messages, %d bytes' % (args.out, len(msgs), sum(map(len, msgs))))
         elif args.cmd == 'kit-roundtrip':
             os.makedirs(args.dir, exist_ok=True)
-            req = bytes.fromhex(args.request) if args.request else None
-            first = s.capture(args.keys, req)
+            req = request
+            first = s.capture(args.keys, req, wait=5.0 if req else 30.0)
             save_syx(os.path.join(args.dir, 'kit-out.syx'), first)
             print('received %d messages, %d bytes' % (len(first), sum(map(len, first))))
             if args.receive_keys:
@@ -343,7 +376,7 @@ def main(argv=None):
             s.send_dump(first)
             time.sleep(args.settle)
             s.shot(os.path.join(args.dir, 'after-receive.png'))
-            again = s.capture(args.keys, req)
+            again = s.capture(args.keys, req, wait=5.0 if req else 30.0)
             save_syx(os.path.join(args.dir, 'kit-back.syx'), again)
             diffs = compare(first, again)
             if diffs:
