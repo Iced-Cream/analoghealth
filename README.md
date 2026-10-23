@@ -24,9 +24,9 @@ Elektron is distributed.
 
 Until 1.1 it was called rytmhealth and was for the Rytm only.
 
-**Status:** the Rytm build has passed on a unit (OS 1.74); the A4 build is
+**Status:** passed on a unit on both machines (Rytm OS 1.74, A4 OS 1.56), and
 checked in the emulator and on the host (see
-[How it was checked](#how-it-was-checked)), not yet on a unit.
+[How it was checked](#how-it-was-checked)).
 
 This repository holds no Elektron code or data: stock code sites are named by
 address, length and SHA-256, and their bytes, like the panel's button layout,
@@ -243,7 +243,16 @@ own encoder input, with no further hook.
   KEYS sit after SYSTEM; remote DOWNs and YES ticked SYSTEM INFO, and the top
   bar showed "CPU 49% DSP 48%/48%". A remote `turn A -40 --step 4` on the OSC
   page showed COARSE TUNE in the header and the value -8, as an emulated panel
-  turn does.
+  turn does. The same build also went through the emulator's OS upgrade path:
+  a stock A4 1.56 received it as elkflash sends it (no prompt), wrote its
+  flash, restarted from it, and answered as above.
+- **The A4 on a unit** (OS 1.56, analoghealth 1.2, 23 Oct 2026, flashed with
+  elkflash): HELLO and STATS answered over USB (CPU 70 %, DSP 67 %, 13.77 MB
+  heap free, 132 MHz, 1500 renders a second); remote GLOBAL and eight DOWNs
+  reached SYSTEM INFO after SYSTEM; YES ticked it and the top bar showed
+  "CPU 73% DSP 67%/72%", then "RAM 13.7M"; a remote `turn LEVEL -20 --step 2`
+  moved the SETTINGS cursor up a row; NO closed the menu with the readout
+  still on. The unit then went back to stock 1.56.
 
 ## Credits
 
