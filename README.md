@@ -83,9 +83,12 @@ menu opened.
 - **Encoders:** `python tools/rytmusb.py turn E -12` turns encoder E (A-H
   are the data encoders, LEVEL the level/data knob) 12 counts left, one count
   per UI tick (20 a second), as a panel turn does: the value popup and the
-  header's long name appear as for a hand turn. `--step N` sends N counts a
-  tick (faster, and the OS's acceleration applies); `--hold FUNC` holds a key
-  through the turn. An encoder pushed within the last moment ignores turns,
+  header's long name appear as for a hand turn. As on the panel, several
+  counts make one value step (on a unit, 60 counts at 4 a tick moved FRQ 12
+  steps, and 20 counts at 2 a tick moved the track level 2), so a turn of a
+  few counts may change nothing. `--step N` sends N counts a tick (faster,
+  and the OS's acceleration applies); `--hold FUNC` holds a key through the
+  turn. An encoder pushed within the last moment ignores turns,
   as on the panel.
 - **Physical keys win:** a key held on the panel cannot be taken by the
   computer, and a panel press of a key the computer holds survives the
@@ -213,6 +216,10 @@ channel) and the panel's button input (the remote keys).
   PLAY and STOP complete; screen captures show both SETTINGS rows and the
   readout ("CPU 69% DSP 64%/71%"); with FUNC held on the panel, `watch` saw
   FUNC down and `keys 'FUNC(PLAY)'` was refused as a physical overlap.
+- **RH12 on the unit** (rytmhealth 1.1, 23 Oct 2026): on the FILTER page a
+  remote `turn E -60 --step 4` put FREQUENCY in the header and moved FRQ from
+  127 to 115, and `turn E 60 --step 4` brought it back; `turn LEVEL -20
+  --step 2` showed TRK LEVEL 98, and `+20` brought it back to 100.
 
 ## Credits
 
