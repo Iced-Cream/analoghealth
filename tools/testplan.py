@@ -247,6 +247,8 @@ class Plan:
                         words = shlex.split(line, comments=True)
                         if words and words[0].startswith('audio-'):
                             self.audio(words[0], words[1:])
+                        elif words and words[0].lower() == 'listen' and self.emulator:
+                            self.note('    (nobody listens to the emulator: skipped)')
                         else:
                             session.step(line)
                     self.results.append((name, 'ok', ''))

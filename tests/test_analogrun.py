@@ -4,11 +4,14 @@
 (Ping, SoftwareVersion, Screenshot, the data store) and sends a dump when
 asked: no MIDI device is opened, and no key session (that is test_keys.py)."""
 from pathlib import Path
+import contextlib
+import io
 import json
 import os
 import struct
 import sys
 import tempfile
+import time
 import unittest
 import zlib
 
@@ -206,6 +209,33 @@ class SessionTest(unittest.TestCase):
             self.s.step('expect-screen a.bin')
         self.assertTrue(Path(self.tmp.name, 'a-got.png').exists())
 
+    def test_listen_waits_for_the_host(self):
+        import threading
+        flag = os.path.join(self.tmp.name, 'listen.json')
+        seen = []
+
+        def host():                       # the person finishes after a while
+            while not os.path.exists(flag):
+                time.sleep(0.05)
+            with open(flag, encoding='utf-8') as fh:
+                seen.append(json.load(fh)['what'])
+            seen.append(len(self.unit.short))
+            time.sleep(0.3)
+            os.remove(flag)
+        t = threading.Thread(target=host)
+        t.start()
+        os.environ['ANALOGRUN_LISTEN_FILE'] = flag
+        try:
+            t0 = time.monotonic()
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.s.run('listen the kick on T1; cc 1 7 100')
+        finally:
+            del os.environ['ANALOGRUN_LISTEN_FILE']
+            t.join()
+        self.assertGreater(time.monotonic() - t0, 0.25)
+        self.assertEqual(seen, ['the kick on T1', 0])      # nothing sent while listening
+        self.assertEqual(self.unit.short, [(0xB0, 7, 100)])
+
     def test_screenshot_inside_a_hold(self):
         events = []
         unit = self.unit
@@ -382,6 +412,11 @@ class PlanTest(unittest.TestCase):
         with contextlib.redirect_stdout(out):
             rc = analogrun.main((['--quiet'] if quiet else []) + ['run', self.plan(text)])
         return rc, out.getvalue()
+
+    def test_emulator_plan_skips_listen(self):
+        rc, out = self.run_plan('name = l\nemulator = yes\n[play]\ncc 1 7 100\nlisten the kick\ncc 1 7 90\n')
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.unit.short, [(0xB0, 7, 100), (0xB0, 7, 90)])
 
     def test_record_then_compare(self):
         head = 'name = home check\nemulator = yes\nrefs = refs\n'

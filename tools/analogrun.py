@@ -47,6 +47,9 @@ Steps (one per line or separated by ';'; '#' starts a comment):
                           write policy's before_save_project may empty it)
     save-kit SEQ          key-driven kit save (keys SEQ), checked
     say TEXT              print TEXT
+    listen TEXT           the person listens for TEXT: the run sends nothing until they
+                          have finished (Enter; or, with ANALOGRUN_LISTEN_FILE set, until
+                          the host removes that file); skipped in emulator plans
 
 Kit dumps: the OS answers a dump request
 
@@ -70,6 +73,7 @@ command here is the only user of the port while it runs: close Transfer,
 Overbridge's MIDI, screendump and analogusb.py first.
 """
 import argparse
+import json
 import os
 import shlex
 import struct
@@ -342,6 +346,22 @@ class Session:
             self.key_steps(' '.join(a))
         elif op == 'say':
             say(' '.join(a))
+        elif op == 'listen':
+            # The person listens to the unit: nothing more is sent until they say they have
+            # finished, however long that takes.
+            self.close()                     # no synthetic key stays held meanwhile
+            what = ' '.join(a)
+            say('  listening: %s' % what)
+            flag = os.environ.get('ANALOGRUN_LISTEN_FILE')
+            if flag:
+                # A host that asks the person itself: it removes the file when they have finished.
+                with open(flag, 'w', encoding='utf-8') as fh:
+                    json.dump({'what': what, 'since': time.time()}, fh)
+                while os.path.exists(flag):
+                    time.sleep(0.5)
+            else:
+                input('  press Enter when you have finished listening ')
+            say('  finished listening')
         else:
             raise ValueError('unknown step %r' % op)
 
