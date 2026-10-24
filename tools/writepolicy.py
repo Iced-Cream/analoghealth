@@ -14,6 +14,9 @@ refuses by raising writepolicy.Refused:
                                        -> the name the item carries afterwards,
                                        or None to leave it as written
     before_dumps(session, msgs)        before SysEx messages go to the unit
+    before_save_project(session, path)  before the keys of a key-driven project save
+                                       into a slot that holds a project, e.g. to
+                                       empty it (the save itself needs an empty slot)
     after_save_project(session, path, name)   after a key-driven project save
     before_save_kit(session)           before a key-driven kit save
     describe_active(kit_name)          a short note for `analogrun active`
@@ -75,6 +78,11 @@ def check_write(rpc, path, new_name=None):
 def before_dumps(session, msgs):
     hook = _hook('before_dumps')
     return hook(session, msgs) if hook else None
+
+
+def before_save_project(session, path):
+    hook = _hook('before_save_project')
+    return hook(session, path) if hook else None
 
 
 def after_save_project(session, path, name):

@@ -43,7 +43,8 @@ Steps (one per line or separated by ';'; '#' starts a comment):
     dump ADDR LEN FILE    DDR to a file (analoghealth)
     send FILE.syx         send the SysEx messages in a file (e.g. a saved dump)
     save-project N NAME SEQ  key-driven SAVE PROJECT into slot N (keys SEQ, ending on the
-                          save), checked, then renamed NAME
+                          save), checked, then renamed NAME; slot N must be empty (a
+                          write policy's before_save_project may empty it)
     save-kit SEQ          key-driven kit save (keys SEQ), checked
     say TEXT              print TEXT
 
@@ -310,6 +311,17 @@ class Session:
             # YES); the new project is then renamed NAME over the data store.
             path = '/projects/%d' % num(a[0])
             name = writepolicy.check_write(self.rpc, path, a[1])
+            if unitdata.target(self.rpc, path)[0] is not None:
+                note = writepolicy.before_save_project(self, path)
+                if note:
+                    say('  ' + note)
+            held, _ = unitdata.target(self.rpc, path)
+            if held is not None:
+                # The A4's SAVE PROJECT AS asks OVERWRITE '<name>'? first when the slot
+                # holds a project other than the active one, so SEQ
+                # may end on the naming screen, and a full slot would not show the save.
+                raise unitdata.DataError('%s holds %r: save-project needs an empty slot '
+                                         '(data clear it first)' % (path, held))
             self.key_steps(' '.join(a[2:]))
             end = time.monotonic() + 15
             while unitdata.target(self.rpc, path)[0] is None:
