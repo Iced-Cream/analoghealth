@@ -293,6 +293,22 @@ class SessionTest(unittest.TestCase):
             self.assertEqual(analogrun.main(['active']), 0)
         self.assertIn("active project: kit 1 is 'KIT A'", out.getvalue())
 
+    def test_shot_command_writes_the_file_named(self):
+        unit = self.unit
+
+        class Port(FakeUnit):
+            def __new__(cls, *_name):
+                return unit
+        saved, analogrun.open_port = analogrun.open_port, Port
+        self.addCleanup(setattr, analogrun, 'open_port', saved)
+        here = os.getcwd()
+        os.chdir(self.tmp.name)
+        try:
+            self.assertEqual(analogrun.main(['shot', 's.png']), 0)
+        finally:
+            os.chdir(here)
+        self.assertTrue(Path(self.tmp.name, 's.png').read_bytes().startswith(b'\x89PNG'))
+
     def test_send_step(self):
         path = Path(self.tmp.name, 'k.syx')
         analogrun.save_syx(path, [make_kit('KIT 6', 5)])

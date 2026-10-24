@@ -535,7 +535,8 @@ def _main(ap, args):
             ap.error('kit-roundtrip needs --kit N (or --keys / --request)')
 
     port = open_port(args.port or 'Analog Rytm')
-    s = Session(port, getattr(args, 'out', '.'))
+    # --out is a folder for run and do; for shot and dump-capture it is the file itself
+    s = Session(port, args.out if args.cmd in ('run', 'do') else '.')
     try:
         if want:
             request = s.dump_request(*want)
