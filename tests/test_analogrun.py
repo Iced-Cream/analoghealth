@@ -14,9 +14,11 @@ import zlib
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
+os.environ.setdefault('ANALOGHEALTH_POLICY', '')    # no local write policy unless a test sets one
 import elkrpc
 import analogrun
-import testrules
+import unitdata
+import writepolicy
 from analogusb import pack7, unpack7
 
 DUMP_REQUEST = analogrun.dump_request(analogrun.KIT_REQUEST, 0)
@@ -29,7 +31,7 @@ def make_kit(name, number=0):
             + bytes([0x00, 0x00, 0x00, 0x05, 0xF7]))
 
 
-KIT = [make_kit('~T KIT 1')]
+KIT = [make_kit('KIT 1')]
 
 
 class FakeUnit:
@@ -127,7 +129,7 @@ class FakeUnit:
             buf = self.jobs[job][2]
             buf += block
             return b'\x01' + struct.pack('>III', job, seq, len(buf))
-        if cmd == testrules.DATA_RENAME:
+        if cmd == unitdata.DATA_RENAME:
             path, name = a.split(b'\0')[:2]
             if path.decode() not in self.store:
                 return bytes([0]) + b'Rename: Not a saved project\0'
@@ -182,11 +184,9 @@ class RpcTest(unittest.TestCase):
 
 
 class SessionTest(unittest.TestCase):
-    """As on a shared test rig: the rules are on."""
+    """Steps and commands against the fake unit, with no write policy."""
 
     def setUp(self):
-        saved, testrules.enforced = testrules.enforced, lambda: True
-        self.addCleanup(setattr, testrules, 'enforced', saved)
         self.unit = FakeUnit()
         self.tmp = tempfile.TemporaryDirectory()
         self.s = analogrun.Session(self.unit, self.tmp.name)
@@ -257,10 +257,10 @@ class SessionTest(unittest.TestCase):
         s.rpc.ping = lambda: (0x14, 'Digitone')
         with self.assertRaises(ValueError):
             s.dump_request(0x62)
-        a4_kit = make_kit('~T KIT 1')
+        a4_kit = make_kit('KIT 1')
         a4_kit = a4_kit[:4] + b'\x06' + a4_kit[5:]
-        self.assertEqual(testrules.kit_name(a4_kit), '~T KIT 1')
-        self.assertTrue(testrules.is_kit_dump(a4_kit))
+        self.assertEqual(unitdata.kit_name(a4_kit), 'KIT 1')
+        self.assertTrue(unitdata.is_kit_dump(a4_kit))
 
     def test_kit_roundtrip_command(self):
         unit = self.unit
@@ -277,10 +277,6 @@ class SessionTest(unittest.TestCase):
         self.assertEqual(analogrun.main(['kit-roundtrip', str(out), '--kit', '0', '--settle', '0']), 1)
         with self.assertRaises(SystemExit):
             analogrun.main(['kit-roundtrip', str(out)])
-        # The person's project is active (its kit 1 is not ~T): no kit goes to the unit.
-        unit.kit, unit.mangle, unit.received_kits = [make_kit('KIT A')], False, 0
-        self.assertEqual(analogrun.main(['kit-roundtrip', str(out), '--kit', '0', '--settle', '0']), 2)
-        self.assertEqual(unit.received_kits, 0)
 
     def test_active_command(self):
         import contextlib, io
@@ -291,21 +287,15 @@ class SessionTest(unittest.TestCase):
                 return unit
         saved, analogrun.open_port = analogrun.open_port, Port
         self.addCleanup(setattr, analogrun, 'open_port', saved)
-        for name, verdict in (('~T KIT 1', 'a test project'), ('KIT A', 'not a test project')):
-            unit.kit = [make_kit(name)]
-            out = io.StringIO()
-            with contextlib.redirect_stdout(out):
-                self.assertEqual(analogrun.main(['active']), 0)
-            self.assertIn('%r (%s)' % (name, verdict), out.getvalue())
+        unit.kit = [make_kit('KIT A')]
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(analogrun.main(['active']), 0)
+        self.assertIn("active project: kit 1 is 'KIT A'", out.getvalue())
 
-    def test_send_step_checks_the_active_project(self):
+    def test_send_step(self):
         path = Path(self.tmp.name, 'k.syx')
-        analogrun.save_syx(path, [make_kit('~T KIT 1', 5)])
-        self.unit.kit = [make_kit('KIT A')]
-        with self.assertRaises(testrules.RuleError):
-            self.s.step('send k.syx')
-        self.assertEqual(getattr(self.unit, 'received_kits', 0), 0)
-        self.unit.kit = [make_kit('~T KIT 1')]
+        analogrun.save_syx(path, [make_kit('KIT 6', 5)])
         self.s.step('send k.syx')
         self.assertEqual(self.unit.received_kits, 1)
 
@@ -328,39 +318,22 @@ class SessionTest(unittest.TestCase):
         self.addCleanup(setattr, analogrun, 'open_port', saved)
         out = Path(self.tmp.name, 'rt')
         run = lambda *a: analogrun.main(['data', *a])
-        # Empty slots outside 121-128, and empty slots without a ~T name: refused.
-        self.assertEqual(run('roundtrip', '/projects/1', str(out), '--to', '/projects/5', '--yes'), 2)
-        self.assertEqual(run('roundtrip', '/projects/1', str(out), '--to', '/projects/121', '--yes'), 2)
-        self.assertNotIn('/projects/121', unit.store)
-        # Into an empty test slot, named ~T in the same command.
-        self.assertEqual(run('roundtrip', '/projects/1', str(out), '--to', '/projects/121',
-                             '--name', '~t copy', '--yes'), 0)
-        self.assertEqual(unit.store['/projects/121'], unit.store['/projects/1'])
-        self.assertEqual(unit.names['/projects/121'], '~T COPY')
-        # A ~T item keeps its name; the person's project is never a target.
-        self.assertEqual(run('roundtrip', '/projects/1', str(out), '--to', '/projects/121', '--yes'), 0)
-        self.assertEqual(unit.names['/projects/121'], '~T COPY')
-        self.assertEqual(run('roundtrip', '/projects/1', str(out), '--yes'), 2)
-        self.assertEqual(run('roundtrip', '/projects/121', str(out), '--to', '/projects/1', '--yes'), 2)
-        self.assertEqual(run('roundtrip', '/projects/1', str(out), '--to', '/projects/122',
-                             '--name', 'COPY', '--yes'), 2)
+        self.assertEqual(run('roundtrip', '/projects/1', str(out), '--to', '/projects/5',
+                             '--name', 'copy', '--yes'), 0)
+        self.assertEqual(unit.store['/projects/5'], unit.store['/projects/1'])
+        self.assertEqual(unit.names['/projects/5'], 'COPY')
         unit.mangle = True
-        self.assertEqual(run('roundtrip', '/projects/1', str(out), '--to', '/projects/122',
-                             '--name', '~T BAD', '--yes'), 1)
+        self.assertEqual(run('roundtrip', '/projects/1', str(out), '--to', '/projects/6', '--yes'), 1)
         unit.mangle = False
         with self.assertRaises(SystemExit):
-            run('put', '/projects/121', 'x.bin')
+            run('put', '/projects/5', 'x.bin')
         src = Path(self.tmp.name, 'p.bin')
         src.write_bytes(bytes(100))
-        self.assertEqual(run('put', '/projects/1', str(src), '--yes'), 2)
-        self.assertEqual(unit.store['/projects/1'], bytes(range(256)) * 50)
-        self.assertEqual(run('put', '/projects/121', str(src), '--yes'), 0)
-        self.assertEqual((unit.store['/projects/121'], unit.names['/projects/121']), (bytes(100), '~T COPY'))
-        backup = Path(self.tmp.name, 'p121.bin')
-        self.assertEqual(run('clear', '/projects/1', str(backup), '--yes'), 2)
-        self.assertIn('/projects/1', unit.store)
-        self.assertEqual(run('clear', '/projects/121', str(backup), '--yes'), 0)
-        self.assertNotIn('/projects/121', unit.store)
+        self.assertEqual(run('put', '/projects/5', str(src), '--yes'), 0)
+        self.assertEqual((unit.store['/projects/5'], unit.names['/projects/5']), (bytes(100), 'COPY'))
+        backup = Path(self.tmp.name, 'p5.bin')
+        self.assertEqual(run('clear', '/projects/5', str(backup), '--yes'), 0)
+        self.assertNotIn('/projects/5', unit.store)
         self.assertEqual(backup.read_bytes(), bytes(100))
         with self.assertRaises(SystemExit):
             run('clear', '/projects/1', str(backup))
@@ -470,12 +443,10 @@ class PlanTest(unittest.TestCase):
             s.step('expect-screen r rows=9-2')
 
 
-class OffRigTest(unittest.TestCase):
-    """Without the marker file the runner writes wherever it is told."""
+class NoPolicyTest(unittest.TestCase):
+    """Without a write policy the runner writes wherever it is told."""
 
     def setUp(self):
-        saved, testrules.enforced = testrules.enforced, lambda: False
-        self.addCleanup(setattr, testrules, 'enforced', saved)
         self.unit = unit = FakeUnit()
 
         class Port(FakeUnit):
@@ -487,6 +458,7 @@ class OffRigTest(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
 
     def test_writes_anywhere_and_names_only_on_request(self):
+        self.assertFalse(writepolicy.installed())
         out = Path(self.tmp.name, 'rt')
         self.assertEqual(analogrun.main(['data', 'roundtrip', '/projects/1', str(out),
                                          '--to', '/projects/5', '--yes']), 0)
@@ -499,44 +471,82 @@ class OffRigTest(unittest.TestCase):
         self.assertEqual(analogrun.main(['kit-roundtrip', str(out), '--kit', '0', '--settle', '0']), 0)
         self.assertEqual(analogrun.main(['data', 'clear', '/projects/1', str(out / 'b.bin'), '--yes']), 0)
 
-    def test_any_numbered_path(self):
-        self.assertEqual(testrules.split_path('/patterns/3'), ('/patterns', 3))
-        with self.assertRaises(testrules.RuleError):
-            testrules.split_path('/projects')
+    def test_policy_path(self):
+        saved = os.environ.pop('ANALOGHEALTH_POLICY')
+        self.addCleanup(os.environ.__setitem__, 'ANALOGHEALTH_POLICY', saved)
+        self.assertTrue(writepolicy.policy_path().endswith(os.path.join('analoghealth', 'policy.py')))
+        os.environ['ANALOGHEALTH_POLICY'] = ''
+        self.assertIsNone(writepolicy.policy_path())
 
-    def test_marker_path(self):
-        self.assertTrue(testrules.marker_path().endswith(os.path.join('analoghealth', 'test-session-rules')))
+
+class PolicyTest(unittest.TestCase):
+    """A local policy file is asked before writes and dumps, and can refuse."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        policy = Path(self.tmp.name, 'policy.py')
+        policy.write_text(
+            'from writepolicy import Refused\n'
+            'def check_write(rpc, path, new_name):\n'
+            '    if path == "/projects/1":\n'
+            '        raise Refused("not that one")\n'
+            '    return (new_name or "KEPT").upper()\n'
+            'def before_dumps(session, msgs):\n'
+            '    raise Refused("no dumps")\n'
+            'def describe_active(name):\n'
+            '    return "noted"\n')
+        saved = os.environ['ANALOGHEALTH_POLICY']
+        os.environ['ANALOGHEALTH_POLICY'] = str(policy)
+        self.addCleanup(os.environ.__setitem__, 'ANALOGHEALTH_POLICY', saved)
+        self.unit = unit = FakeUnit()
+
+        class Port(FakeUnit):
+            def __new__(cls, *_name):
+                return unit
+        saved_port, analogrun.open_port = analogrun.open_port, Port
+        self.addCleanup(setattr, analogrun, 'open_port', saved_port)
+
+    def test_hooks(self):
+        import contextlib, io
+        self.assertTrue(writepolicy.installed())
+        src = Path(self.tmp.name, 'p.bin')
+        src.write_bytes(bytes(100))
+        self.assertEqual(analogrun.main(['data', 'put', '/projects/1', str(src), '--yes']), 2)
+        self.assertEqual(self.unit.store['/projects/1'], bytes(range(256)) * 50)
+        self.assertEqual(analogrun.main(['data', 'put', '/projects/7', str(src), '--yes']), 0)
+        self.assertEqual(self.unit.names['/projects/7'], 'KEPT')
+        out = Path(self.tmp.name, 'kit')
+        self.assertEqual(analogrun.main(['kit-roundtrip', str(out), '--kit', '0', '--settle', '0']), 2)
+        self.assertEqual(getattr(self.unit, 'received_kits', 0), 0)
+        text = io.StringIO()
+        with contextlib.redirect_stdout(text):
+            analogrun.main(['active'])
+        self.assertIn("kit 1 is 'KIT 1' (noted)", text.getvalue())
 
 
-class RulesTest(unittest.TestCase):
-    def test_names(self):
-        self.assertEqual(testrules.check_new_name('~t kit a'), '~T KIT A')
-        for bad in ('KIT A', '~T', '~T ', '~T ' + 'X' * 13, '~T K_1', '~TKIT'):
-            with self.assertRaises(testrules.RuleError):
-                testrules.check_new_name(bad)
-        self.assertTrue(testrules.is_test_name('~T X'))
-        self.assertFalse(testrules.is_test_name('T X'))
-
+class UnitDataTest(unittest.TestCase):
     def test_paths(self):
-        self.assertEqual(testrules.split_path('/soundbanks/C/7'), ('/soundbanks/C', 7))
-        for bad in ('/samples/x', '/projects', '/projects/a', '/soundbanks/Q/1'):
-            with self.assertRaises(testrules.RuleError):
-                testrules.split_path(bad)
+        self.assertEqual(unitdata.split_path('/soundbanks/C/7'), ('/soundbanks/C', 7))
+        self.assertEqual(unitdata.split_path('/patterns/3'), ('/patterns', 3))
+        for bad in ('/projects', '/projects/a'):
+            with self.assertRaises(unitdata.DataError):
+                unitdata.split_path(bad)
 
     def test_renamed_kit_dump(self):
         dump = make_kit('KIT 1')
         data = dump[10:-5]
         dump = dump[:10] + data + bytes([(sum(data) & 0x3FFF) >> 7, sum(data) & 0x7F]) + dump[-3:]
-        new = testrules.renamed_kit_dump(dump, '~T KIT 1')
-        self.assertEqual(testrules.kit_name(new), '~T KIT 1')
+        new = unitdata.renamed_kit_dump(dump, 'NEW NAME')
+        self.assertEqual(unitdata.kit_name(new), 'NEW NAME')
         cs = sum(new[10:-5]) & 0x3FFF
         self.assertEqual((new[-5] << 7) | new[-4], cs)
         self.assertEqual(new[-3:], dump[-3:])
 
     def test_kit_name(self):
-        self.assertEqual(testrules.kit_name(make_kit('~T KIT 1')), '~T KIT 1')
-        with self.assertRaises(testrules.RuleError):
-            testrules.kit_name(b'\xF0\x7E\xF7')
+        self.assertEqual(unitdata.kit_name(make_kit('KIT 1')), 'KIT 1')
+        with self.assertRaises(unitdata.DataError):
+            unitdata.kit_name(b'\xF0\x7E\xF7')
 
 
 if __name__ == '__main__':

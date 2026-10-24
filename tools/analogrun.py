@@ -19,9 +19,9 @@ SysEx device byte.
     python analogrun.py active                         the active project's kit 1 name
     python analogrun.py data ls PATH
     python analogrun.py data get PATH OUT
-    python analogrun.py data put PATH IN [--name '~T X'] --yes   replaces a test item
-    python analogrun.py data roundtrip PATH DIR [--to PATH2] [--name '~T X'] --yes
-    python analogrun.py data clear PATH BACKUP --yes   empties a test item (saves it first)
+    python analogrun.py data put PATH IN [--name NAME] --yes   replaces an item
+    python analogrun.py data roundtrip PATH DIR [--to PATH2] [--name NAME] --yes
+    python analogrun.py data clear PATH BACKUP --yes   empties an item (saves it first)
 
 Steps (one per line or separated by ';'; '#' starts a comment):
 
@@ -43,7 +43,7 @@ Steps (one per line or separated by ';'; '#' starts a comment):
     dump ADDR LEN FILE    DDR to a file (analoghealth)
     send FILE.syx         send the SysEx messages in a file (e.g. a saved dump)
     save-project N NAME SEQ  key-driven SAVE PROJECT into slot N (keys SEQ, ending on the
-                          save), checked, then renamed NAME ('~T ...')
+                          save), checked, then renamed NAME
     save-kit SEQ          key-driven kit save (keys SEQ), checked
     say TEXT              print TEXT
 
@@ -59,14 +59,9 @@ in the slot the dump names at any time, and reload it when that slot is the
 active kit, so a round trip needs no menu on the unit. A kit's name is bytes
 4-19 of the unpacked dump on both.
 
-Test-session rules (testrules.py), only on a computer set up as a shared test
-rig (the file test-session-rules in %LOCALAPPDATA%\\analoghealth, or
-~/.config/analoghealth); there they cannot be switched off: writes, renames
-and clears go only to items named `~T ...` or to empty
-slots, which get a `~T` name in the same command (--name); empty project
-slots only in 121-128; a kit or sound dump is sent only while the active
-project is a test project, which names its kit 1 `~T ...`. The key-driven
-save steps check their target the same way and confirm it afterwards.
+A local write policy (writepolicy.py), if one is installed on this computer,
+is asked before every write, rename, clear, dump sent and key-driven save, and
+can refuse it (exit 2). Without one the runner writes wherever it is told.
 
 Key steps open a analoghealth key session on first use and close it (releasing
 any synthetic key) at the end; everything else works on a stock OS. Each
@@ -82,7 +77,8 @@ import time
 
 import elkrpc
 import testplan
-import testrules
+import unitdata
+import writepolicy
 from analogusb import Diag, RemoteKeys, decode_stats, key_sequence, peek, req_stats
 
 ELEKTRON = bytes([0xF0, 0x00, 0x20, 0x3C])
@@ -306,39 +302,31 @@ class Session:
                 fh.write(data)
         elif op == 'send':
             msgs = load_syx(self.path(a[0]))
-            if any(testrules.is_kit_dump(m) for m in msgs):
-                testrules.check_active_project(self)
+            writepolicy.before_dumps(self, msgs)
             self.send_dump(msgs)
             say('  sent %d messages, %d bytes' % (len(msgs), sum(map(len, msgs))))
         elif op == 'save-project':
             # save-project N NAME SEQ: SEQ ends on the unit's save (its naming screen's
             # YES); the new project is then renamed NAME over the data store.
             path = '/projects/%d' % num(a[0])
-            name = testrules.check_write(self.rpc, path, a[1])
+            name = writepolicy.check_write(self.rpc, path, a[1])
             self.key_steps(' '.join(a[2:]))
             end = time.monotonic() + 15
-            while testrules.target(self.rpc, path)[0] is None:
+            while unitdata.target(self.rpc, path)[0] is None:
                 if time.monotonic() > end:
-                    raise testrules.RuleError('%s still empty 15 s after the keys: check the unit'
-                                              % path)
+                    raise unitdata.DataError('%s still empty 15 s after the keys: check the unit'
+                                             % path)
                 time.sleep(0.5)
             mark(self, path, name)
             say('  %s saved, named %r' % (path, name))
-            if not testrules.enforced():
-                return
-            # SAVE PROJECT AS makes the saved copy the active project (seen on the
-            # unit), so its kit 1 can be marked now: that is how later steps know a
-            # test project is active.
-            kit = self.capture(request=self.dump_request(KIT_REQUEST, 0), wait=5.0, quiet=0.5)[0]
-            old = testrules.kit_name(kit)
-            if not testrules.is_test_name(old):
-                new = testrules.check_new_name(('~T ' + (old or 'KIT 1'))[:testrules.NAME_MAX])
-                self.send_dump([testrules.renamed_kit_dump(kit, new)])
-                time.sleep(1.0)
-            say('  its kit 1 is %r' % testrules.check_active_project(self))
+            # SAVE PROJECT AS makes the saved copy the active project (seen on the unit).
+            note = writepolicy.after_save_project(self, path, name)
+            if note:
+                say('  ' + note)
         elif op == 'save-kit':
-            if testrules.enforced():
-                say('  active project kit 1: %r' % testrules.check_active_project(self))
+            note = writepolicy.before_save_kit(self)
+            if note:
+                say('  ' + note)
             self.key_steps(' '.join(a))
         elif op == 'say':
             say(' '.join(a))
@@ -426,14 +414,14 @@ def backup(s, path, out):
 
 
 def mark(s, path, name):
-    """Give a just-written item its (~T) name and confirm it in the listing; no
-    name (off a test rig, none asked for): leave it as written."""
+    """Give a just-written item its name and confirm it in the listing; no name
+    (none asked for or given by the policy): leave it as written."""
     if name is None:
         return
-    testrules.rename(s.rpc, path, name)
-    now, _ = testrules.target(s.rpc, path)
+    unitdata.rename(s.rpc, path, name)
+    now, _ = unitdata.target(s.rpc, path)
     if now != name:
-        raise testrules.RuleError('%s should be named %r but lists as %r' % (path, name, now))
+        raise unitdata.DataError('%s should be named %r but lists as %r' % (path, name, now))
 
 
 def diff_png(w, h, diff):
@@ -500,7 +488,7 @@ def main(argv=None):
     p.add_argument('path')
     p.add_argument('file', nargs='?')
     p.add_argument('--to', help='roundtrip: write to this path instead of PATH')
-    p.add_argument('--name', help="the target's new name, '~T ...' (needed for an empty slot)")
+    p.add_argument('--name', help="the target's new name")
     p.add_argument('--yes', action='store_true', help='put/roundtrip/clear: allow replacing or emptying the object')
     args = ap.parse_args(argv)
 
@@ -570,21 +558,20 @@ def _main(ap, args):
             say('%s (product id 0x%02X), OS %s' % (name, pid, s.rpc.version()))
         elif args.cmd == 'active':
             msgs = s.capture(request=s.dump_request(KIT_REQUEST, 0), wait=5.0, quiet=0.5)
-            name = testrules.kit_name(msgs[0])
-            say('active project: kit 1 is %r (%s)' % (
-                name, 'a test project' if testrules.is_test_name(name) else 'not a test project'))
+            name = unitdata.kit_name(msgs[0])
+            note = writepolicy.describe_active(name)
+            say('active project: kit 1 is %r%s' % (name, ' (%s)' % note if note else ''))
         elif args.cmd == 'dump-capture':
             msgs = s.capture(args.keys, request, args.wait, args.quiet)
             save_syx(args.out, msgs)
             say('%s: %d messages, %d bytes' % (args.out, len(msgs), sum(map(len, msgs))))
         elif args.cmd == 'kit-roundtrip':
             os.makedirs(args.dir, exist_ok=True)
-            if testrules.enforced():
-                say('active project kit 1: %r' % testrules.check_active_project(s))
             req = request
             first = s.capture(args.keys, req, wait=5.0 if req else 30.0)
             save_syx(os.path.join(args.dir, 'kit-out.syx'), first)
             say('received %d messages, %d bytes' % (len(first), sum(map(len, first))))
+            writepolicy.before_dumps(s, first)
             if args.receive_keys:
                 s.key_steps(args.receive_keys)
             s.send_dump(first)
@@ -613,18 +600,18 @@ def _main(ap, args):
                     fh.write(data)
                 say('\n%s: %d bytes' % (args.file, len(data)))
             elif args.op == 'clear':
-                name, _ = testrules.target(s.rpc, args.path)
+                name, _ = unitdata.target(s.rpc, args.path)
                 if name is None:
                     say('%s is already empty' % args.path)
                     return 0
-                testrules.check_write(s.rpc, args.path)
+                writepolicy.check_write(s.rpc, args.path)
                 backup(s, args.path, args.file)
                 s.rpc.data_clear(args.path)
                 say('cleared %s' % args.path)
             elif args.op == 'put':
                 with open(args.file, 'rb') as fh:
                     data = fh.read()
-                name = testrules.check_write(s.rpc, args.path, args.name)
+                name = writepolicy.check_write(s.rpc, args.path, args.name)
                 backup(s, args.path, args.file + '.before.bin')
                 s.rpc.data_write(args.path, data, progress=progress)
                 mark(s, args.path, name)
@@ -635,7 +622,7 @@ def _main(ap, args):
                 data = s.rpc.data_read(args.path, progress=progress)
                 save(os.path.join(args.file, 'out.bin'), data)
                 say('\nread %s: %d bytes' % (args.path, len(data)))
-                name = testrules.check_write(s.rpc, to, args.name)
+                name = writepolicy.check_write(s.rpc, to, args.name)
                 if to != args.path:
                     backup(s, to, os.path.join(args.file, 'target-before.bin'))
                 s.rpc.data_write(to, data, progress=progress)
@@ -657,8 +644,11 @@ def _main(ap, args):
                 say('\nPASS: %s read back identical (%d bytes) apart from its slot number, '
                       'then named %r' % (to, len(back), name))
         return 0
-    except testrules.RuleError as e:
-        say('\nrefused (test-session rules): %s' % e)
+    except writepolicy.Refused as e:
+        say('\nrefused (write policy): %s' % e)
+        return 2
+    except unitdata.DataError as e:
+        say('\nrefused: %s' % e)
         return 2
     finally:
         try:
