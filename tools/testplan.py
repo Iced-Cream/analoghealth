@@ -7,8 +7,9 @@ A plan is settings (`key = value`) followed by named steps (`[name]`), each a
 list of analogrun steps (see analogrun.py) or audio steps:
 
     name = SRC hold
-    unit = rytm                   # the lock name of the unit (rytm, a4)
-    port = Analog Rytm            # or the emulator's "rytm-emu usb out,rytm-emu usb in"
+    unit = rytm                   # the lock name of the unit (rytm, a4, digitone)
+    port = Analog Rytm            # or the emulator's "rytm-emu usb out,rytm-emu usb in", or tcp:HOST:PORT
+    digirun = C:/path/to/digihealth/tools      # digitone: where digirun.py is (or DIGIRUN_PATH)
     emulator = yes                # an emulator run: no lock, references may be recorded
     record-refs = yes             # (emulator only) expect-screen saves references
     refs = refs                   # folder of reference screens, next to the plan
@@ -42,7 +43,14 @@ summary.json); the command prints one line per step and the first failure's
 detail. A hardware flash needs `emulator-run`: a passing emulator run of the
 same plan with the same OS file (sha256), so a build reaches a unit only
 after it has passed in the emulator.
+
+A Digitone plan (unit = digitone) runs its steps through digihealth's digirun.py
+instead of analogrun.py (no send or save-* steps there). The two share module
+names (elkrpc, midisock), so such a plan runs in a process of its own:
+
+    python testplan.py PLAN.txt [--port PORT] [--quiet]
 """
+import contextlib
 import hashlib
 import json
 import os
@@ -53,7 +61,8 @@ import sys
 import time
 
 KEY = re.compile(r'^([a-z][a-z0-9-]*)\s*=\s*(.*)$')
-PORTS = {'rytm': 'Analog Rytm', 'a4': 'Analog Four'}
+PORTS = {'rytm': 'Analog Rytm', 'a4': 'Analog Four', 'digitone': 'Digitone'}
+DIGI_UNITS = ('digitone',)               # units whose steps run through digirun.py
 
 
 def is_plan(path):
@@ -138,6 +147,7 @@ class Plan:
         self.emulator = g('emulator', 'no').lower() == 'yes'
         self.port = port or g('port') or PORTS.get(self.unit, 'Analog Rytm')
         self.quiet = quiet
+        self.stdout = sys.stdout          # the verdict goes here, whatever the steps print
         stamp = time.strftime('%Y%m%d-%H%M%S')
         self.run_dir = os.path.join(os.path.normpath(self.rel(g('out', 'runs'))),
                                     '%s-%s-%s' % (re.sub(r'\W+', '-', self.name).strip('-'),
@@ -237,10 +247,32 @@ class Plan:
 
     # --- the run ------------------------------------------------------------------
 
+    def runner(self):
+        """The step runner's module: analogrun, or digirun for a Digitone plan."""
+        if self.unit not in DIGI_UNITS:
+            import analogrun
+            analogrun.OUT = self.log
+            return analogrun
+        where = self.settings.get('digirun') or os.environ.get('DIGIRUN_PATH')
+        if where:
+            where = self.rel(where)
+            sys.path.insert(0, os.path.dirname(where) if where.endswith('.py') else where)
+        import digirun
+        return digirun
+
     def run(self):
-        import analogrun
         t0 = time.monotonic()
-        analogrun.OUT = self.log
+        digest = None
+        try:
+            mod = self.runner()
+        except ImportError as e:
+            self.results.append(('runner', 'FAIL', 'no digirun.py (digirun = its folder): %s' % e))
+            return self.finish(t0, digest)
+        # digirun prints what its steps report: into the log, as analogrun's OUT does
+        with contextlib.redirect_stdout(self.log) if mod.__name__ == 'digirun' else contextlib.nullcontext():
+            return self.run_with(mod, t0)
+
+    def run_with(self, runner, t0):
         session = port = None
         digest = None
         try:
@@ -257,8 +289,8 @@ class Plan:
                 except Exception as e:           # noqa: BLE001
                     self.results.append(('flash', 'FAIL', str(e)))
                     return self.finish(t0, digest)
-            port = analogrun.open_port(self.port)
-            session = analogrun.Session(port, self.run_dir)
+            port = runner.open_port(self.port)
+            session = runner.Session(port, self.run_dir)
             session.refs = self.rel(self.settings.get('refs', 'refs'))
             session.record_refs = self.emulator and self.settings.get('record-refs', 'no') == 'yes'
             failed = False
@@ -297,7 +329,8 @@ class Plan:
                     self.note('closing the key session: %s' % e)
                 finally:
                     port.close()
-            analogrun.OUT = None
+            if hasattr(runner, 'OUT'):
+                runner.OUT = None
         return self.finish(t0, digest)
 
     def finish(self, t0, digest):
@@ -321,9 +354,27 @@ class Plan:
             lines += ['  %-4s %s' % (r, n) for n, r, _ in self.results]
         if first:
             lines.append('first failure, %s: %s' % (first[0], first[2]))
-        print('\n'.join(lines))
+        print('\n'.join(lines), file=self.stdout)
         return 0 if ok else 1
 
 
 def run_plan(path, port=None, quiet=False):
+    if parse(path)[0].get('unit') in DIGI_UNITS and ('analogrun' in sys.modules or 'elkrpc' in sys.modules):
+        # analogrun's elkrpc / midisock are loaded here: digirun needs its own, in a new process
+        cmd = [sys.executable, os.path.abspath(__file__), path] + (['--port', port] if port else []) + \
+            (['--quiet'] if quiet else [])
+        r = subprocess.run(cmd, capture_output=True, text=True)
+        print(r.stdout, end='')
+        sys.stderr.write(r.stderr)
+        return r.returncode
     return Plan(path, port, quiet).run()
+
+
+if __name__ == '__main__':
+    import argparse
+    ap = argparse.ArgumentParser(description='run a test plan (see the module docstring)')
+    ap.add_argument('plan')
+    ap.add_argument('--port')
+    ap.add_argument('--quiet', action='store_true')
+    args = ap.parse_args()
+    sys.exit(run_plan(args.plan, args.port, args.quiet))

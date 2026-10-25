@@ -451,6 +451,38 @@ class PlanTest(unittest.TestCase):
         rc, out = self.run_plan('unit = rytm\nflash = os.syx\nemulator-run = runs/emu-ok\n[boot]\nwait 0\n')
         self.assertIn('flashed a different OS file', out)
 
+    def test_digitone_plan_runs_digirun_in_its_own_process(self):
+        fake = Path(self.tmp.name, 'fake')
+        fake.mkdir()
+        (fake / 'digirun.py').write_text(
+            'import os, sys\n'
+            'assert "analogrun" not in sys.modules\n'
+            'def open_port(name):\n'
+            '    return type("P", (), {"close": lambda self: None, "name": name})()\n'
+            'class Session:\n'
+            '    def __init__(self, port, out):\n'
+            '        self.port, self.out = port, out\n'
+            '    def step(self, line):\n'
+            '        print("  did", line)\n'
+            '        with open(os.path.join(self.out, "steps.txt"), "a") as fh:\n'
+            '            fh.write("%s %s\\n" % (self.port.name, line))\n'
+            '        if line == "fail":\n'
+            '            raise AssertionError("asked to")\n'
+            '    def close(self):\n'
+            '        pass\n')
+        head = 'name = dn\nunit = digitone\nemulator = yes\nport = tcp:127.0.0.1:7311\ndigirun = fake\n'
+        rc, out = self.run_plan(head + '[keys]\ntap SETTINGS\nwait 0\n[back]\ntap NO\n')
+        self.assertEqual(rc, 0, out)
+        self.assertIn('dn on the emulator: PASS (2 steps', out)
+        run = sorted(Path(self.tmp.name, 'runs').iterdir())[-1]
+        self.assertEqual((run / 'steps.txt').read_text().splitlines(),
+                         ['tcp:127.0.0.1:7311 tap SETTINGS', 'tcp:127.0.0.1:7311 wait 0',
+                          'tcp:127.0.0.1:7311 tap NO'])
+        self.assertIn('did tap NO', (run / 'log.txt').read_text())        # its prints go to the log
+        rc, out = self.run_plan(head + '[keys]\nfail\n[back]\ntap NO\n')
+        self.assertEqual(rc, 1)
+        self.assertIn('first failure, keys: AssertionError: asked to', out)
+
     def test_plain_steps_file_is_not_a_plan(self):
         self.assertFalse(self.testplan.is_plan(self.plan('cc 1 2 3\nwait 0\n')))
         self.assertTrue(self.testplan.is_plan(self.plan('[a]\nwait 0\n')))
