@@ -152,6 +152,37 @@ class FakeUnit:
         return b''
 
 
+class FakeDin:
+    """The unit's DIN MIDI ports through an interface: no RPC there, but it answers a dump
+    request with the kit, as the OS does on any port."""
+
+    def __init__(self):
+        self.pending, self.got, self.closed = [], [], False
+
+    def send(self, data):
+        data = bytes(data)
+        self.got.append(data)
+        if data == DUMP_REQUEST:
+            self.pending += KIT
+
+    def send_short(self, *data):
+        self.got.append(bytes(data))
+
+    def receive(self, seconds=1.0, until=None):
+        msgs, self.pending = self.pending, []
+        if until:
+            until(msgs)
+        return msgs
+
+    def close(self):
+        self.closed = True
+
+
+def ports(usb, din):
+    """An open_port that gives the fake DIN port for names starting 'din', else the unit."""
+    return lambda name='Analog Rytm': din if name.lower().startswith('din') else usb
+
+
 class RpcTest(unittest.TestCase):
     def setUp(self):
         self.unit = FakeUnit()
@@ -359,6 +390,49 @@ class SessionTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.s.step('capture x.syx 1 some')
 
+    def test_din_send_and_capture(self):
+        din = FakeDin()
+        s = analogrun.Session(self.unit, self.tmp.name, din)
+        Path(self.tmp.name, 'req.syx').write_bytes(DUMP_REQUEST)
+        s.run('send req.syx din; capture d.syx 0.1 any din')
+        self.assertEqual(din.got, [DUMP_REQUEST])
+        self.assertEqual(analogrun.load_syx(Path(self.tmp.name, 'd.syx')), KIT)
+        self.assertEqual(self.unit.pending, [])          # nothing went over USB
+        s.step('capture u.syx 0.1 none')                  # and nothing came back there
+        # each port keeps its own `since`: a DIN send does not drop USB replies, nor the reverse
+        s.run('send req.syx; send req.syx din; shot a.png; capture u.syx 0.1 any; capture d.syx 0.1 any din')
+        self.assertEqual(analogrun.load_syx(Path(self.tmp.name, 'u.syx')), KIT)
+        self.assertEqual(analogrun.load_syx(Path(self.tmp.name, 'd.syx')), KIT)
+        s.step('capture d.syx 0.1 none din')
+        with self.assertRaisesRegex(ValueError, r'\[din\]'):
+            s.step('capture x.syx 0.1 any some din')
+
+    def test_din_needs_a_din_port(self):
+        Path(self.tmp.name, 'req.syx').write_bytes(DUMP_REQUEST)
+        with self.assertRaisesRegex(ValueError, 'no DIN MIDI port'):
+            self.s.step('send req.syx din')
+        with self.assertRaisesRegex(ValueError, 'no DIN MIDI port'):
+            self.s.step('capture x.syx 0.1 din')
+        Path(self.tmp.name, 'din').write_bytes(DUMP_REQUEST)
+        self.s.run('send din; capture x.syx 0.1 any')     # a file named din is a file
+
+    def test_din_option(self):
+        din = FakeDin()
+        saved, analogrun.open_port = analogrun.open_port, ports(self.unit, din)
+        self.addCleanup(setattr, analogrun, 'open_port', saved)
+        Path(self.tmp.name, 'req.syx').write_bytes(DUMP_REQUEST)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = analogrun.main(['--din', 'din-port', '--quiet', 'do',
+                                 'send req.syx din; capture d.syx 0.1 any din', '--out', self.tmp.name])
+        self.assertEqual((rc, out.getvalue().strip()), (0, 'ok'))
+        self.assertEqual(analogrun.load_syx(Path(self.tmp.name, 'd.syx')), KIT)
+        self.assertTrue(din.closed)
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            rc = analogrun.main(['--quiet', 'do', 'send req.syx din', '--out', self.tmp.name])
+        self.assertEqual(rc, 1)
+        self.assertIn('no DIN MIDI port (give --din PORT)', out.getvalue())
+
     def test_ping_step(self):
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
@@ -503,6 +577,30 @@ class PlanTest(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertIn('first failure, keys: AssertionError: asked to', out)
 
+    def test_din_plan(self):
+        din = FakeDin()
+        analogrun.open_port = ports(self.unit, din)       # setUp's cleanup puts it back
+        req = Path(self.tmp.name, 'req.syx')
+        req.write_bytes(DUMP_REQUEST)
+        body = '[kit over din]\nsend %s din\ncapture k.syx 0.1 any din\n' % req.as_posix()
+        rc, out = self.run_plan('name = d\nemulator = yes\n' + body)
+        self.assertEqual(rc, 1)
+        self.assertIn('no DIN MIDI port', out)
+        import contextlib, io
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            rc = analogrun.main(['--din', 'din-port', '--quiet', 'run', self.plan('name = d\nemulator = yes\n' + body)])
+        self.assertEqual(rc, 0, out.getvalue())
+        run = sorted(Path(self.tmp.name, 'runs').iterdir())[-1]
+        self.assertEqual(analogrun.load_syx(run / 'k.syx'), KIT)
+        self.assertTrue(din.closed)
+        rc, out = self.run_plan('name = d\nemulator = yes\ndin = din-port\n' + body)    # or the setting
+        self.assertEqual(rc, 0, out)
+
+    def test_din_plan_refused_on_the_digitone(self):
+        rc, out = self.run_plan('name = dn\nunit = digitone\nemulator = yes\ndin = din-port\n[a]\nwait 0\n')
+        self.assertEqual(rc, 1)
+        self.assertIn('first failure, din: DIN steps run on the Rytm and A4 only so far', out)
+
     def test_plain_steps_file_is_not_a_plan(self):
         self.assertFalse(self.testplan.is_plan(self.plan('cc 1 2 3\nwait 0\n')))
         self.assertTrue(self.testplan.is_plan(self.plan('[a]\nwait 0\n')))
@@ -622,6 +720,13 @@ class PolicyTest(unittest.TestCase):
         out = Path(self.tmp.name, 'kit')
         self.assertEqual(analogrun.main(['kit-roundtrip', str(out), '--kit', '0', '--settle', '0']), 2)
         self.assertEqual(getattr(self.unit, 'received_kits', 0), 0)
+        # a send over DIN asks the policy too (over USB), and is refused before anything goes out
+        din = FakeDin()
+        s = analogrun.Session(self.unit, self.tmp.name, din)
+        Path(self.tmp.name, 'k.syx').write_bytes(KIT[0])
+        with self.assertRaises(writepolicy.Refused):
+            s.step('send k.syx din')
+        self.assertEqual(din.got, [])
         text = io.StringIO()
         with contextlib.redirect_stdout(text):
             analogrun.main(['active'])

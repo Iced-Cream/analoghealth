@@ -4,9 +4,11 @@ SysEx dumps and the data store, in one session, so a step can look at the
 screen while a key is held. The Analog Rytm MKII by default; --port NAME
 (before the command) picks another unit, e.g. --port "Analog Four", or
 --port "IN,OUT" names the input and output ports apart (an emulator's
-loopback ports: --port "a4-emu usb out,a4-emu usb in"). The kit and pattern
-dump commands work on both units: the unit's product id (RPC Ping) picks its
-SysEx device byte.
+loopback ports: --port "a4-emu usb out,a4-emu usb in"). --din PORT, in the
+same forms, names the MIDI interface cabled to the unit's DIN ports (or an
+emulator's DIN MIDI over TCP) for send and capture with a trailing din. The
+kit and pattern dump commands work on both units: the unit's product id (RPC
+Ping) picks its SysEx device byte.
 
     python analogrun.py shot OUT.png [--scale N]       the screen now (stock OS too)
     python analogrun.py run SCRIPT [--out DIR]         steps from a file ('-' = stdin)
@@ -42,12 +44,15 @@ Steps (one per line or separated by ';'; '#' starts a comment):
     wait S
     stats                 one analoghealth CPU/DSP/heap line
     dump ADDR LEN FILE    DDR to a file (analoghealth)
-    send FILE.syx         send the SysEx messages in a file (e.g. a saved dump)
-    capture FILE.syx S [any|none]  listen S seconds, then save every SysEx the unit sent
+    send FILE.syx [din]   send the SysEx messages in a file (e.g. a saved dump); din: into
+                          the unit's DIN MIDI input (--din), the write policy still asked
+                          over USB
+    capture FILE.syx S [any|none] [din]  listen S seconds, then save every SysEx the unit sent
                           since the last send (or since this step) to FILE, the session's
                           own RPC and diagnostics traffic left out; FILE is written even
                           when nothing came. any: stop unless something came; none: stop
-                          if anything came
+                          if anything came. din: what came out of its DIN MIDI output
+                          since the last send there, not USB
     ping                  the unit's product, name and OS version (RPC Ping, read-only)
     save-project N NAME SEQ  key-driven SAVE PROJECT into slot N (keys SEQ, ending on the
                           save), checked, then renamed NAME; slot N must be empty (a
@@ -180,8 +185,9 @@ def is_dump(m):
 
 
 class Session:
-    def __init__(self, port, out='.'):
+    def __init__(self, port, out='.', din=None):
         self.port = Tap(port)
+        self.din = Tap(din) if din is not None else None     # the DIN MIDI port (--din)
         self.rpc = elkrpc.Rpc(self.port)
         self.diag = Diag(self.port)
         self.out = out
@@ -209,6 +215,14 @@ class Session:
 
     def path(self, name):
         return name if os.path.isabs(name) else os.path.join(self.out, name)
+
+    def leg(self, a, least):
+        """A send/capture step's words -> (its Tap, the words without a trailing din)."""
+        if len(a) > least and a[-1].lower() == 'din':
+            if self.din is None:
+                raise ValueError('din: no DIN MIDI port (give --din PORT)')
+            return self.din, a[:-1]
+        return self.port, a
 
     # --- steps ----------------------------------------------------------------
 
@@ -332,23 +346,26 @@ class Session:
             with open(self.path(a[2]), 'wb') as fh:
                 fh.write(data)
         elif op == 'send':
+            tap, a = self.leg(a, 1)
             msgs = load_syx(self.path(a[0]))
-            writepolicy.before_dumps(self, msgs)
-            self.port.since = []             # a capture step after this keeps the replies
-            self.send_dump(msgs)
-            say('  sent %d messages, %d bytes' % (len(msgs), sum(map(len, msgs))))
+            writepolicy.before_dumps(self, msgs)     # over USB RPC, whichever port sends
+            tap.since = []                   # a capture step after this keeps the replies
+            self.send_dump(msgs, port=tap)
+            say('  sent %d messages, %d bytes%s' % (len(msgs), sum(map(len, msgs)),
+                                                    ' over DIN' if tap is self.din else ''))
         elif op == 'capture':
-            # capture FILE S [any|none]: the replies to a send, or the silence, as evidence
+            # capture FILE S [any|none] [din]: the replies to a send, or the silence, as evidence
+            tap, a = self.leg(a, 2)
             want = a[2].lower() if len(a) > 2 else None
-            if want not in (None, 'any', 'none'):
-                raise ValueError('capture FILE S [any|none]')
-            if self.port.since is None:
-                self.port.since = []
+            if want not in (None, 'any', 'none') or len(a) > 3:
+                raise ValueError('capture FILE S [any|none] [din]')
+            if tap.since is None:
+                tap.since = []
             end = time.monotonic() + float(a[1])
             while time.monotonic() < end:
-                self.port.receive(min(0.05, max(end - time.monotonic(), 0)))
-            got = [m for m in self.port.since if m[:1] == b'\xF0' and not ours(m)]
-            self.port.since = []             # the next capture keeps only what comes after
+                tap.receive(min(0.05, max(end - time.monotonic(), 0)))
+            got = [m for m in tap.since if m[:1] == b'\xF0' and not ours(m)]
+            tap.since = []                   # the next capture keeps only what comes after
             save_syx(self.path(a[0]), got)
             say('  captured %d messages, %d bytes' % (len(got), sum(map(len, got))))
             if want == 'any' and not got:
@@ -444,9 +461,9 @@ class Session:
             if not dumps and time.monotonic() >= end:
                 raise TimeoutError('no dump arrived')
 
-    def send_dump(self, msgs, gap=0.05):
+    def send_dump(self, msgs, gap=0.05, port=None):
         for m in msgs:
-            self.port.send(m)
+            (port or self.port).send(m)
             time.sleep(gap)
 
 
@@ -533,6 +550,9 @@ def main(argv=None):
                                  epilog=__doc__.split('\n', 1)[1])
     ap.add_argument('--port', default=None,
                     help='part of the unit\'s MIDI port name (default: Analog Rytm), or IN,OUT')
+    ap.add_argument('--din', default=None,
+                    help='the MIDI port cabled to the unit\'s DIN ports (name, IN,OUT or tcp:ADDR), '
+                         'for send/capture ... din')
     ap.add_argument('-q', '--quiet', dest='quiet_mode', action='store_true',
                     help='print one line (ok, or what failed); the rest goes to --log')
     ap.add_argument('--log', help='with --quiet: append the full output to this file')
@@ -574,7 +594,7 @@ def main(argv=None):
     args = ap.parse_args(argv)
 
     if args.cmd == 'run' and args.script != '-' and testplan.is_plan(args.script):
-        return testplan.run_plan(args.script, port=args.port, quiet=args.quiet_mode)
+        return testplan.run_plan(args.script, port=args.port, quiet=args.quiet_mode, din=args.din)
     if not args.quiet_mode:
         return _main(ap, args)
     global OUT
@@ -616,8 +636,13 @@ def _main(ap, args):
             ap.error('kit-roundtrip needs --kit N (or --keys / --request)')
 
     port = open_port(args.port or 'Analog Rytm')
+    try:
+        din = open_port(args.din) if args.din else None
+    except BaseException:
+        port.close()
+        raise
     # --out is a folder for run and do; for shot and dump-capture it is the file itself
-    s = Session(port, args.out if args.cmd in ('run', 'do') else '.')
+    s = Session(port, args.out if args.cmd in ('run', 'do') else '.', din)
     try:
         if want:
             request = s.dump_request(*want)
@@ -737,6 +762,8 @@ def _main(ap, args):
             s.close()
         finally:
             port.close()
+            if din is not None:
+                din.close()
 
 
 if __name__ == '__main__':

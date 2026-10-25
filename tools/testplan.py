@@ -9,6 +9,8 @@ list of analogrun steps (see analogrun.py) or audio steps:
     name = SRC hold
     unit = rytm                   # the lock name of the unit (rytm, a4, digitone)
     port = Analog Rytm            # or the emulator's "rytm-emu usb out,rytm-emu usb in", or tcp:HOST:PORT
+    din = USB MIDI Interface      # the MIDI interface on the unit's DIN ports, for send/capture ... din
+                                  # (analogrun --din wins over it; Rytm and A4 only)
     digirun = C:/path/to/digihealth/tools      # digitone: where digirun.py is (or DIGIRUN_PATH)
     emulator = yes                # an emulator run: no lock, references may be recorded
     record-refs = yes             # (emulator only) expect-screen saves references
@@ -137,7 +139,7 @@ def sha256(path):
 
 
 class Plan:
-    def __init__(self, path, port=None, quiet=False):
+    def __init__(self, path, port=None, quiet=False, din=None):
         self.path = os.path.abspath(path)
         self.here = os.path.dirname(self.path)
         self.settings, self.steps = parse(path)
@@ -146,6 +148,7 @@ class Plan:
         self.unit = g('unit', 'rytm')
         self.emulator = g('emulator', 'no').lower() == 'yes'
         self.port = port or g('port') or PORTS.get(self.unit, 'Analog Rytm')
+        self.din = din or g('din')        # the DIN MIDI port, if any step uses it
         self.quiet = quiet
         self.stdout = sys.stdout          # the verdict goes here, whatever the steps print
         stamp = time.strftime('%Y%m%d-%H%M%S')
@@ -263,6 +266,9 @@ class Plan:
     def run(self):
         t0 = time.monotonic()
         digest = None
+        if self.din and self.unit in DIGI_UNITS:
+            self.results.append(('din', 'FAIL', 'DIN steps run on the Rytm and A4 only so far'))
+            return self.finish(t0, digest)
         try:
             mod = self.runner()
         except ImportError as e:
@@ -273,7 +279,7 @@ class Plan:
             return self.run_with(mod, t0)
 
     def run_with(self, runner, t0):
-        session = port = None
+        session = port = din = None
         digest = None
         try:
             rc, last = self.lock('claim', self.unit, '--for', 'test plan ' + self.name,
@@ -290,7 +296,13 @@ class Plan:
                     self.results.append(('flash', 'FAIL', str(e)))
                     return self.finish(t0, digest)
             port = runner.open_port(self.port)
-            session = runner.Session(port, self.run_dir)
+            try:
+                din = runner.open_port(self.din) if self.din else None
+            except BaseException:
+                port.close()
+                port = None
+                raise
+            session = runner.Session(port, self.run_dir, din=din) if din else runner.Session(port, self.run_dir)
             session.refs = self.rel(self.settings.get('refs', 'refs'))
             session.record_refs = self.emulator and self.settings.get('record-refs', 'no') == 'yes'
             failed = False
@@ -329,6 +341,8 @@ class Plan:
                     self.note('closing the key session: %s' % e)
                 finally:
                     port.close()
+                    if din is not None:
+                        din.close()
             if hasattr(runner, 'OUT'):
                 runner.OUT = None
         return self.finish(t0, digest)
@@ -358,16 +372,16 @@ class Plan:
         return 0 if ok else 1
 
 
-def run_plan(path, port=None, quiet=False):
+def run_plan(path, port=None, quiet=False, din=None):
     if parse(path)[0].get('unit') in DIGI_UNITS and ('analogrun' in sys.modules or 'elkrpc' in sys.modules):
         # analogrun's elkrpc / midisock are loaded here: digirun needs its own, in a new process
         cmd = [sys.executable, os.path.abspath(__file__), path] + (['--port', port] if port else []) + \
-            (['--quiet'] if quiet else [])
+            (['--din', din] if din else []) + (['--quiet'] if quiet else [])
         r = subprocess.run(cmd, capture_output=True, text=True)
         print(r.stdout, end='')
         sys.stderr.write(r.stderr)
         return r.returncode
-    return Plan(path, port, quiet).run()
+    return Plan(path, port, quiet, din).run()
 
 
 if __name__ == '__main__':
@@ -375,6 +389,7 @@ if __name__ == '__main__':
     ap = argparse.ArgumentParser(description='run a test plan (see the module docstring)')
     ap.add_argument('plan')
     ap.add_argument('--port')
+    ap.add_argument('--din')
     ap.add_argument('--quiet', action='store_true')
     args = ap.parse_args()
-    sys.exit(run_plan(args.plan, args.port, args.quiet))
+    sys.exit(run_plan(args.plan, args.port, args.quiet, args.din))
