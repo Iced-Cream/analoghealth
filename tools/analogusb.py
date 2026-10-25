@@ -15,7 +15,7 @@ on the Analog Rytm MKII (OS 1.74) and the Analog Four MKII (OS 1.56).
     python analogusb.py turn E -12 [--step N] [--hold FUNC]   encoder E 12 counts left
     python analogusb.py pad BD [--vel 100 | --raw R] [--hold MS] [--pressure 40,80 --every MS]
     python analogusb.py padcap [S] [--out FILE.json]   log what the Rytm's panel sends for S s
-    python analogusb.py padplay FILE.json [--pads BD,SD]   send a logged pad performance again
+    python analogusb.py padplay FILE.json [--pads BD,SD] [--log OUT.json]   send a logged pad performance again
     python analogusb.py --port "Analog Four" ...   pick the unit when both are connected
 
 irpina's digiusb.py (digihealth) for the Rytm and the A4. analoghealth answers
@@ -756,21 +756,66 @@ def cmd_padcap(d, args):
         print('saved %s' % out)
 
 
+def _drain(d, at, entries):
+    while True:
+        logged, first, got = pads.decode_read(d.call(pads.req_capture_read, at))
+        entries += got
+        at = first + len(got)
+        if at >= logged:
+            return at
+
+
 def cmd_padplay(d, args):
-    """padplay FILE.json [--pads BD,SD]: send the logged pad messages again."""
-    which = None
+    """padplay FILE.json [--pads BD,SD] [--log OUT.json]: send the logged pad messages
+    again; --log also logs what reached the panel receiver meanwhile and compares it
+    with the original."""
+    which = out = None
     if '--pads' in args:
         i = args.index('--pads')
         which, args = [p.strip().upper() for p in args[i + 1].split(',')], args[:i] + args[i + 2:]
+    if '--log' in args:
+        i = args.index('--log')
+        out, args = args[i + 1], args[:i] + args[i + 2:]
     entries, _threshold = pads.load(args[0])
     scripts = pads.replay_script(pads.messages(entries), which)
     if not scripts:
         raise ValueError('the log holds no pad messages')
-    pad_caps(d)
-    with RemoteKeys(d) as keys:
-        for s in scripts:
-            keys.pads(s)
+    caps = pad_caps(d)
+    got, at = [], 0
+    if out:
+        d.call(pads.req_capture, 1)
+    try:
+        with RemoteKeys(d) as keys:
+            for s in scripts:
+                keys.pads(s)
+                if out:
+                    at = _drain(d, at, got)
+    finally:
+        if out:
+            d.call(pads.req_capture, 0)
     print('played %d events in %d scripts' % (sum(map(len, scripts)), len(scripts)))
+    if out:
+        at = _drain(d, at, got)
+        pads.save(out, got, caps['threshold'])
+        want = [m for m in pads.messages(entries) if not m['ours'] and len(m['bytes']) == 2
+                and m['bytes'][0] >> 4 in (pads.PRESSURE, pads.STRIKE, pads.RELEASE, pads.KEY)
+                and (which is None or pads.PADS[m['bytes'][0] & 15] in which)]
+        sent = [m for m in pads.messages(got) if m['ours']]
+        print('original vs replayed (ms from each one\'s first):')
+        w0 = want[0]['t'] if want else 0
+        s0 = sent[0]['t'] if sent else 0
+        same = len(want) == len(sent)
+        for i in range(max(len(want), len(sent))):
+            a = want[i] if i < len(want) else None
+            b = sent[i] if i < len(sent) else None
+            ta = ((a['t'] - w0) & 0xFFFFFFFF) / pads.TICKS_PER_MS if a else None
+            tb = ((b['t'] - s0) & 0xFFFFFFFF) / pads.TICKS_PER_MS if b else None
+            ok = a and b and a['bytes'] == b['bytes'] and abs(ta - tb) <= 2
+            same = same and bool(ok)
+            print('  %-34s %-34s %s' % ('%9.2f %s' % (ta, pads.describe(a, caps['threshold'])) if a else '-',
+                                        '%9.2f %s' % (tb, pads.describe(b, caps['threshold'])) if b else '-',
+                                        'ok' if ok else 'DIFFERS'))
+        print('replay %s; saved %s' % ('matches (bytes equal, times within 2 ms)' if same else 'DIFFERS', out))
 
 
 COMMANDS = {'cfw': cmd_cfw, 'stats': cmd_stats, 'peek': cmd_peek, 'dump': cmd_dump, 'keys': cmd_keys,

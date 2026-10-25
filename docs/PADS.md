@@ -77,7 +77,8 @@ messages again with their timing (the strike force, pressure, release and key
 messages as they were, and button messages that change a pad's bit as bridge
 key events), in scripts split where no pad is down. In analogrun:
 `pad PADS [VEL] [HOLD_MS] [raw=R] [pressure=V,..] [every=MS] [key=..]` and
-`padplay FILE.json [pads=BD,SD]`.
+`padplay FILE.json [pads=BD,SD]`. `padplay --log OUT.json` also logs what the
+replay fed the OS and compares it with the original, message by message.
 
 ## Checked
 
