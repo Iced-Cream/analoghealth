@@ -345,6 +345,26 @@ class SessionTest(unittest.TestCase):
         self.s.step('send k.syx')
         self.assertEqual(self.unit.received_kits, 1)
 
+    def test_capture_step_keeps_the_replies_to_a_send(self):
+        Path(self.tmp.name, 'req.syx').write_bytes(DUMP_REQUEST)
+        self.s.run('send req.syx; shot a.png; capture reply.syx 0.1 any')
+        self.assertEqual(analogrun.load_syx(Path(self.tmp.name, 'reply.syx')), KIT)  # no RPC
+        with self.assertRaises(AssertionError):                    # nothing more came
+            self.s.step('capture again.syx 0.1 any')
+        self.assertEqual(Path(self.tmp.name, 'again.syx').read_bytes(), b'')
+        self.s.step('capture quiet.syx 0.1 none')
+        self.s.step('send req.syx')
+        with self.assertRaises(AssertionError):
+            self.s.step('capture loud.syx 0.1 none')
+        with self.assertRaises(ValueError):
+            self.s.step('capture x.syx 1 some')
+
+    def test_ping_step(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.s.step('ping')
+        self.assertIn("ping: product 0x10 'Analog Rytm MKII', OS 1.74", out.getvalue())
+
     def test_syx_files_and_compare(self):
         two = [KIT[0], make_kit('X', 1)]
         path = Path(self.tmp.name, 'k.syx')
