@@ -678,7 +678,7 @@ def _main(ap, args):
                     mark(s, to, name)
                 say('\nwrote %s, named %r' % (to, name))
                 save(os.path.join(args.file, 'back.bin'), back)
-                expected = {0x18}               # the slot number, which the unit rewrites
+                expected = {0x17, 0x18}         # the slot number (u16), which the unit rewrites
                 if len(back) != len(data) or any(
                         x != y for i, (x, y) in enumerate(zip(data, back)) if i not in expected):
                     n = sum(x != y for x, y in zip(back, data)) + abs(len(back) - len(data))
