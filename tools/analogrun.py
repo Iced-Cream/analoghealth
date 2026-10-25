@@ -34,7 +34,8 @@ Steps (one per line or separated by ';'; '#' starts a comment):
     expect-screen NAME [S]  stop unless the screen equals NAME.bin (in the plan's refs
                           folder), retrying for S seconds; a mismatch reports the differing
                           rows and columns and saves NAME-got.png and NAME-diff.png;
-                          rows=A-B (anywhere after NAME) compares rows A..B only
+                          rows=A-B (anywhere after NAME) compares rows A..B only;
+                          settle: a match must still hold 0.4 s later
     cc CH NUM VAL         MIDI channel 1-16
     nrpn CH MSB LSB VAL   VAL 0-16383 (CC 99, 98, 6, 38)
     note CH NOTE VEL [MS] note on, off after MS (default 100)
@@ -249,6 +250,10 @@ class Session:
             # folder if set), retrying for up to WAIT_S while the screen settles; rows=A-B
             # compares only rows A..B (a test build's own drawing elsewhere, say, that
             # depends on timing), and the failure report and diff picture cover only those.
+            # `settle` (testplan adds it when it folds a wait into the check): a match counts
+            # only when the screen still matches 0.4 s later.
+            settle = 'settle' in a[1:]
+            a = [w for w in a if w != 'settle']
             opts = [w for w in a[1:] if w.startswith('rows=')]
             a = a[:1] + [w for w in a[1:] if not w.startswith('rows=')]
             span = None
@@ -276,9 +281,16 @@ class Session:
             def same(g):
                 return g.pixels == want if span is None else not screen_diff(
                     g.pixels, want, g.w, g.h, span)[0]
-            while not same(got) and time.monotonic() < end:
-                time.sleep(0.2)
+            while True:
+                while not same(got) and time.monotonic() < end:
+                    time.sleep(0.2)
+                    got = self.rpc.screenshot()
+                if not settle or not same(got):
+                    break
+                time.sleep(0.4)
                 got = self.rpc.screenshot()
+                if same(got) or time.monotonic() >= end:
+                    break
             if not same(got):
                 diff, text = screen_diff(got.pixels, want, got.w, got.h, span)
                 stem = self.path(os.path.splitext(os.path.basename(ref))[0])

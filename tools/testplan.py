@@ -34,7 +34,9 @@ list of analogrun steps (see analogrun.py) or audio steps:
 
 A step whose name ends in "(hardware)" (audio over ASIO, say) is skipped in an
 emulator run. Steps run in order and stop at the first failure (the rest are
-skipped).
+skipped). A `wait N` straight before an `expect-screen` is folded into the check, which then
+polls for up to N plus its own seconds and passes once the screen matches and holds (not
+while recording references).
 Everything goes to a run folder (log.txt, screenshots, recordings,
 summary.json); the command prints one line per step and the first failure's
 detail. A hardware flash needs `emulator-run`: a passing emulator run of the
@@ -91,6 +93,30 @@ def parse(path):
     if not steps:
         raise ValueError('%s: no [step] sections' % path)
     return settings, steps
+
+
+def merge_wait(line, following):
+    """`wait N` straight before `expect-screen REF [T] [rows=..]` (or before `shot X` and
+    then that check) -> the lines to run instead of the next one or two: the check polling
+    for N + T s and confirming the match holds (`settle`), then the shot if there was one;
+    or None. The wait only gave the screen time to settle, and the check already retries,
+    so this saves most of N; the shot is then of the same, checked screen."""
+    w, nxt = shlex.split(line, comments=True), [shlex.split(l, comments=True) for l in following]
+    if len(w) != 2 or w[0].lower() != 'wait' or not nxt or not nxt[0]:
+        return None
+    shot = []
+    if nxt[0][0].lower() == 'shot' and len(nxt) > 1 and nxt[1]:
+        shot, nxt = [following[0]], nxt[1:]
+    if nxt[0][0].lower() != 'expect-screen':
+        return None
+    e = nxt[0]
+    t = [x for x in e[2:] if not x.startswith('rows=')]
+    try:
+        total = float(w[1]) + (float(t[0]) if t else 0)
+    except ValueError:
+        return None
+    return [' '.join(['expect-screen', e[1], '%g' % total, 'settle'] +
+                     [x for x in e[2:] if x.startswith('rows=')])] + shot
 
 
 def sha256(path):
@@ -242,10 +268,16 @@ class Plan:
                     continue
                 self.note('[%s]' % name)
                 try:
-                    for line in lines:
+                    for i, line in enumerate(lines):
                         self.note('  ' + line)
                         words = shlex.split(line, comments=True)
-                        if words and words[0].startswith('audio-'):
+                        merged = None if session.record_refs else merge_wait(line, lines[i + 1:i + 3])
+                        if merged:
+                            # wait N then expect-screen: poll from now instead, so the
+                            # check passes as soon as the screen is right (see merge_wait)
+                            self.note('    (waiting for the screen instead)')
+                            lines[i + 1:i + 1 + len(merged)] = merged
+                        elif words and words[0].startswith('audio-'):
                             self.audio(words[0], words[1:])
                         elif words and words[0].lower() == 'listen' and self.emulator:
                             self.note('    (nobody listens to the emulator: skipped)')
