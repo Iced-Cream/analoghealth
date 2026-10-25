@@ -596,8 +596,22 @@ class PlanTest(unittest.TestCase):
         rc, out = self.run_plan('name = d\nemulator = yes\ndin = din-port\n' + body)    # or the setting
         self.assertEqual(rc, 0, out)
 
+    def test_din_setting_opens_only_for_din_steps(self):
+        def no_din(name='Analog Rytm'):
+            if name.lower().startswith('din'):
+                raise OSError('the DIN port should stay closed')
+            return self.unit
+        analogrun.open_port = no_din                       # setUp's cleanup puts it back
+        rc, out = self.run_plan('name = d\nemulator = yes\ndin = din-port\n[midi]\ncc 1 7 100\n')
+        self.assertEqual(rc, 0, out)
+        import contextlib, io
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            rc = analogrun.main(['--din', 'din-port', '--quiet', 'run',
+                                 self.plan('name = d\nemulator = yes\n[midi]\ncc 1 7 100\n')])
+        self.assertEqual(rc, 0, out.getvalue())
+
     def test_din_plan_refused_on_the_digitone(self):
-        rc, out = self.run_plan('name = dn\nunit = digitone\nemulator = yes\ndin = din-port\n[a]\nwait 0\n')
+        rc, out = self.run_plan('name = dn\nunit = digitone\nemulator = yes\ndin = din-port\n[a]\nsend k.syx din\n')
         self.assertEqual(rc, 1)
         self.assertIn('first failure, din: DIN steps run on the Rytm and A4 only so far', out)
 

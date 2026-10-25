@@ -10,7 +10,8 @@ list of analogrun steps (see analogrun.py) or audio steps:
     unit = rytm                   # the lock name of the unit (rytm, a4, digitone)
     port = Analog Rytm            # or the emulator's "rytm-emu usb out,rytm-emu usb in", or tcp:HOST:PORT
     din = USB MIDI Interface      # the MIDI interface on the unit's DIN ports, for send/capture ... din
-                                  # (analogrun --din wins over it; Rytm and A4 only)
+                                  # (analogrun --din wins over it; opened only when a step uses din;
+                                  # Rytm and A4 only)
     digirun = C:/path/to/digihealth/tools      # digitone: where digirun.py is (or DIGIRUN_PATH)
     emulator = yes                # an emulator run: no lock, references may be recorded
     record-refs = yes             # (emulator only) expect-screen saves references
@@ -65,6 +66,17 @@ import time
 KEY = re.compile(r'^([a-z][a-z0-9-]*)\s*=\s*(.*)$')
 PORTS = {'rytm': 'Analog Rytm', 'a4': 'Analog Four', 'digitone': 'Digitone'}
 DIGI_UNITS = ('digitone',)               # units whose steps run through digirun.py
+
+
+def uses_din(steps):
+    """Whether any send/capture step ends in din (analogrun's DIN legs)."""
+    for _, lines in steps:
+        for l in lines:
+            w = shlex.split(l, comments=True)
+            if w and w[-1].lower() == 'din' and (w[0].lower() == 'send' and len(w) > 2 or
+                                                 w[0].lower() == 'capture' and len(w) > 3):
+                return True
+    return False
 
 
 def is_plan(path):
@@ -148,7 +160,7 @@ class Plan:
         self.unit = g('unit', 'rytm')
         self.emulator = g('emulator', 'no').lower() == 'yes'
         self.port = port or g('port') or PORTS.get(self.unit, 'Analog Rytm')
-        self.din = din or g('din')        # the DIN MIDI port, if any step uses it
+        self.din = (din or g('din')) if uses_din(self.steps) else None   # opened only for din steps
         self.quiet = quiet
         self.stdout = sys.stdout          # the verdict goes here, whatever the steps print
         stamp = time.strftime('%Y%m%d-%H%M%S')
