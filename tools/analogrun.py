@@ -32,6 +32,11 @@ Steps (one per line or separated by ';'; '#' starts a comment):
     release KEY
     keys SEQ              as analogusb.py keys: 'GLOBAL,DOWN,FUNC(YES)'
     turn ENC DELTA [STEP] encoder turn, if the analoghealth build has them
+    pad PADS [VEL] [HOLD_MS] [raw=R] [pressure=V,V,..] [every=MS] [key=bridge|panel|none]
+                          Rytm pads struck as the panel strikes them (analoghealth 1.3):
+                          PADS one name or several (BD,SD), VEL 1-127 (default 100) or the
+                          raw force R, held HOLD_MS (default 100), pressure values every MS
+    padplay FILE.json [pads=BD,SD]  a pad performance logged with analogusb.py padcap, again
     shot FILE             screenshot: .png (4x) or .bin (raw framebuffer)
     expect-screen NAME [S]  stop unless the screen equals NAME.bin (in the plan's refs
                           folder), retrying for S seconds; a mismatch reports the differing
@@ -96,7 +101,8 @@ import elkrpc
 import testplan
 import unitdata
 import writepolicy
-from analogusb import Diag, RemoteKeys, decode_stats, key_sequence, peek, req_stats
+from analogusb import Diag, RemoteKeys, decode_stats, key_sequence, peek, req_stats, pad_caps
+import analogpads
 
 ELEKTRON = bytes([0xF0, 0x00, 0x20, 0x3C])
 KIT_REQUEST, WORK_KIT_REQUEST, WORK_PATTERN_REQUEST = 0x62, 0x68, 0x6A
@@ -270,6 +276,33 @@ class Session:
             if not hasattr(self.keys, 'turn'):
                 raise ValueError('this analogusb.py has no encoder turns')
             self.keys.turn(a[0].upper(), num(a[1]), num(a[2]) if len(a) > 2 else 1)
+        elif op == 'pad':
+            opts = dict(w.split('=', 1) for w in a[1:] if '=' in w)
+            a = [w for w in a if '=' not in w]
+            if set(opts) - {'raw', 'pressure', 'every', 'key'} or not 1 <= len(a) <= 3:
+                raise ValueError('pad PADS [VEL] [HOLD_MS] [raw=R] [pressure=V,..] [every=MS] [key=..]')
+            threshold = pad_caps(self.diag)['threshold']
+            raw = (num(opts['raw']) if 'raw' in opts
+                   else analogpads.raw_for(num(a[1]) if len(a) > 1 else 100, threshold))
+            key = opts.get('key', 'bridge')
+            if key not in ('bridge', 'panel', 'none'):
+                raise ValueError('key=bridge, panel or none')
+            pressure = [num(v) for v in opts['pressure'].split(',')] if 'pressure' in opts else []
+            for name in a[0].upper().split(','):
+                self.keys.pads(analogpads.hit(name, raw, num(a[2]) if len(a) > 2 else 100, pressure,
+                                              num(opts.get('every', '10')),
+                                              None if key == 'none' else key))
+                say('  %s struck: raw %d, velocity %d' % (name, raw, analogpads.velocity(raw, threshold)))
+        elif op == 'padplay':
+            which = [w[5:].upper().split(',') for w in a[1:] if w.startswith('pads=')]
+            entries, _ = analogpads.load(self.path(a[0]))
+            scripts = analogpads.replay_script(analogpads.messages(entries), which[0] if which else None)
+            if not scripts:
+                raise ValueError('%s holds no pad messages' % a[0])
+            pad_caps(self.diag)
+            for script in scripts:
+                self.keys.pads(script)
+            say('  played %d pad events' % sum(map(len, scripts)))
         elif op == 'shot':
             s = self.shot(a[0])
             say('  %s: %dx%d, %d lit' % (a[0], s.w, s.h, s.lit()))

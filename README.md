@@ -85,8 +85,10 @@ completion, and an error stops the sequence and lets go of every key.
 Completion means the stock button driver took the transition, not that a
 menu opened.
 
-- **Rytm pads** from the computer are their key events only: the sound is a
-  separate velocity message the helper does not send.
+- **Rytm pads:** a pad name in `keys` is the pad's key event only. To strike a
+  pad, with its velocity, pressure and release as the panel sends them, use
+  `analogusb.py pad` ([pads](docs/PADS.md)); `padcap` logs what the panel
+  sends and `padplay` sends a logged performance again.
 - **Encoders:** `python tools/analogusb.py turn E -12` turns encoder E 12
   counts left, one count per UI tick (20 a second), as a panel turn does: the
   value popup and the header's long name appear as for a hand turn. The
@@ -147,10 +149,10 @@ You need:
 
 ```bash
 python -m elekloader.patch --stock Analog-Rytm_MKII_OS1.74.syx \
-    --mod core-0.4.elemod --mod out/analoghealth-1.2.elemod \
-    --out Analog-Rytm_MKII_OS1.74-health.syx --version AH12
+    --mod core-0.4.elemod --mod out/analoghealth-1.3.elemod \
+    --out Analog-Rytm_MKII_OS1.74-health.syx --version AH13
 python -m elekloader.patch --stock Analog-Four_MKII_OS1.56.syx \
-    --mod core-0.1.elemod --mod out/analoghealth-1.2.elemod \
+    --mod core-0.1.elemod --mod out/a4/analoghealth-1.2.elemod \
     --out Analog-Four_MKII_OS1.56-health.syx --version AH12
 ```
 
@@ -166,9 +168,9 @@ The Digitakt mk1 cross toolchain (m68k binutils and gcc; on Debian or Ubuntu,
 WSL) and elekloader, importable. The stock file picks the device:
 
 ```bash
-python build.py --stock Analog-Rytm_MKII_OS1.74.syx     # -> out/analoghealth-1.2.elemod (Rytm)
+python build.py --stock Analog-Rytm_MKII_OS1.74.syx     # -> out/analoghealth-1.3.elemod (Rytm)
 python build.py --stock Analog-Four_MKII_OS1.56.syx --out out/a4   # (A4)
-python -m elekloader.lint out/analoghealth-1.2.elemod --stock Analog-Rytm_MKII_OS1.74.syx --with core-0.4.elemod
+python -m elekloader.lint out/analoghealth-1.3.elemod --stock Analog-Rytm_MKII_OS1.74.syx --with core-0.4.elemod
 ```
 
 | file | |
@@ -179,6 +181,8 @@ python -m elekloader.lint out/analoghealth-1.2.elemod --stock Analog-Rytm_MKII_O
 | `ar174.inc`, `a4/a4156.inc` | the stock routines and data it uses: Rytm OS 1.74, A4 OS 1.56 |
 | `core_candidate.c`, `core_candidate.s`, `core_candidate.h` | the physical/synthetic input bridge on the button driver, and the encoder input, private to this mod |
 | `remote_keys.c`, `remote_keys.s`, `remote_keys.h` | the bounded key mailbox, UI tick and clock |
+| `remote_pads.c`, `remote_pads.s`, `remote_pads.h` | Rytm only: the pad player and the panel log, on the panel's receive path ([pads](docs/PADS.md)) |
+| `tools/analogpads.py` | pad scripts, the log's decoder and replay, the velocity mapping |
 | `keys-ar2.def`, `keys-a4.def`, `tools/keymap.py` | key names and their OS key codes; the firmware finds each key on the panel from the unit's own table |
 | `tools/analogusb.py`, `tools/winmidi.py`, `tools/midimido.py` | the diagnostics and key client, and its MIDI transports |
 | `tools/analogrun.py`, `tools/elkrpc.py` | the test runner and Elektron RPC client (host tools) |
@@ -191,7 +195,9 @@ digihealth's stock routines, found again in each OS, with that OS's
 addresses (`ar174.inc`, `a4/a4156.inc`). It hooks the same three places as
 digihealth: the task switch (idle time), the SysEx input (the USB channel)
 and the panel's button input (the remote keys). Encoder turns use the OS's
-own encoder input, with no further hook.
+own encoder input, with no further hook. On the Rytm, a fourth site, the
+entry of the panel's receive path, logs the panel's bytes and lets the pad
+player wait until the panel is between messages.
 
 ## How it was checked
 

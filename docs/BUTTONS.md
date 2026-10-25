@@ -13,14 +13,15 @@ own table when it first runs a key command, and offers only the keys it finds.
   KIT/SND/... row (SONG is the song-mode key), `OCT_DOWN`/`OCT_UP` the octave
   keys, `T1`-`T4` the track keys and `KB_C`... `KB_C2` the keyboard, whose
   codes rise by a semitone.
-- **Rytm pads:** a pad from the computer is the pad's key event only. It does
-  not play the sound, which comes with the pad's velocity; the helper sends no
-  velocity. In the emulator a remote `BD` sent no MIDI note, where a pad hit
-  sends one.
+- **Rytm pads:** a pad name here is the pad's key event only. It does not
+  play the sound, which comes with the pad's strike message: in the emulator a
+  remote `BD` key sent no MIDI note, where a pad hit sends one. `analogusb.py
+  pad` sends the strike, pressure and release as the panel does
+  ([pads](PADS.md)).
 - **Encoders** are turned with `analogusb.py turn` (A-H and LEVEL on the Rytm,
   A-J and LEVEL on the A4), not named here; their pushes are the `_PUSH` keys.
-- **Not in the maps:** the Rytm pads' velocity and pressure, master volume and
-  power.
+- **Not in the maps:** master volume and power (the Rytm pads' velocity and
+  pressure are [pad commands](PADS.md)).
 
 ## Analog Rytm MKII (OS 1.74)
 

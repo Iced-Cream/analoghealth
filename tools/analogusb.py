@@ -13,6 +13,9 @@ on the Analog Rytm MKII (OS 1.74) and the Analog Four MKII (OS 1.56).
     python analogusb.py keys 'FUNC(PLAY)'
     python analogusb.py keys 'GLOBAL,DOWN,DOWN,YES'
     python analogusb.py turn E -12 [--step N] [--hold FUNC]   encoder E 12 counts left
+    python analogusb.py pad BD [--vel 100 | --raw R] [--hold MS] [--pressure 40,80 --every MS]
+    python analogusb.py padcap [S] [--out FILE.json]   log what the Rytm's panel sends for S s
+    python analogusb.py padplay FILE.json [--pads BD,SD]   send a logged pad performance again
     python analogusb.py --port "Analog Four" ...   pick the unit when both are connected
 
 irpina's digiusb.py (digihealth) for the Rytm and the A4. analoghealth answers
@@ -38,6 +41,7 @@ import struct
 import sys
 import time
 from keymap import KEYSETS, MAPS, SUPPORTED, PRODUCTS, ENCODERS, ALL_KEYS, ALL_ENCODERS, A4
+import analogpads as pads
 
 HEADER = bytes([0xF0, 0x00, 0x20, 0x3C, 0x7D, 0x00])
 HELLO, STATS, PEEK = 0x01, 0x02, 0x03
@@ -196,7 +200,8 @@ class Diag:
 
     def call(self, builder, *args, timeout=2.0, tries=2):
         """Only known reads may be retried; actions need explicit status recovery."""
-        if builder not in (req_hello, req_stats, req_peek, req_caps, req_key_status):
+        if builder not in (req_hello, req_stats, req_peek, req_caps, req_key_status,
+                           pads.req_pad_caps, pads.req_capture_read):
             tries = 1
         if tries < 1:
             raise ValueError('tries must be positive')
@@ -218,7 +223,7 @@ class Diag:
         def answered(msgs):
             for m in msgs[len(found):]:
                 r = parse(m)
-                if CAPS <= cmd <= CANCEL and bytes(m) != HEADER + pack7(unpack7(bytes(m)[6:-1])) + b'\xf7':
+                if (CAPS <= cmd <= CANCEL or pads.PAD_CAPS <= cmd <= pads.PAD_RUN) and bytes(m) != HEADER + pack7(unpack7(bytes(m)[6:-1])) + b'\xf7':
                     r = None
                 found.append(r if r and r['seq'] == seq and r['cmd'] == cmd | 0x80 else None)
             return any(found)
@@ -339,6 +344,30 @@ class RemoteKeys:
             ticks = min(MAX_TURNS, left // size)
             self.action(TURN, encoder, ((sign * size) & 0xFF) << 8 | ticks)
             left -= size * ticks
+
+    def pads(self, events):
+        """Run one pad script (analogpads: [(ms, header, data)]) as one operation and
+        wait until the firmware has played it and let go of every pad."""
+        pads.check(events)
+        self.operation += 1
+        try:
+            payload = self.diag.call(pads.req_pad_run, self.session, self.operation, events,
+                                     timeout=0.25)
+            report = self._report(payload, self.operation)
+        except _RequestRefused:
+            self.operation -= 1
+            raise
+        except TimeoutError:
+            report = self.status()
+        deadline = time.monotonic() + events[-1][0] / 1000 + 3
+        while report['state'] == 'accepted':
+            if time.monotonic() >= deadline:
+                raise TimeoutError('pad script still running; not replayed')
+            time.sleep(0.02)
+            report = self.status()
+        if report['state'] != 'completed':
+            raise RuntimeError('pad script %s: %s' % (report['state'], report['reason']))
+        return report
 
     def cancel(self):
         try:
@@ -629,8 +658,123 @@ def cmd_watch(d, args):
         raise TimeoutError('%s was not pressed' % until)
 
 
+def pad_caps(d):
+    try:
+        caps = pads.decode_caps(d.call(pads.req_pad_caps))
+    except _RequestRefused:
+        raise ValueError('this firmware has no pad commands (an analoghealth before 1.3, '
+                         'or not a Rytm)') from None
+    if caps['revision'] != 1 or caps['pads'] != len(pads.PADS):
+        raise ValueError('unsupported pad revision %d' % caps['revision'])
+    return caps
+
+
+def pad_args(args):
+    parser = argparse.ArgumentParser(
+        prog='analogusb.py pad',
+        description='Strike Rytm pads as the panel does: PADS is a pad name (BD..CB) or '
+                    'several, comma-separated, struck one after another.', allow_abbrev=False)
+    parser.add_argument('pads', type=lambda t: [p.strip().upper() for p in t.split(',')])
+    force = parser.add_mutually_exclusive_group()
+    force.add_argument('--vel', type=int, default=100,
+                       help='the velocity the OS should see, 1..127 (default 100)')
+    force.add_argument('--raw', type=int, help='the raw force the panel sends, 0..255')
+    parser.add_argument('--hold', type=int, default=100, help='ms between strike and release')
+    parser.add_argument('--gap', type=int, default=150, help='ms between pads')
+    parser.add_argument('--pressure', type=lambda t: [int(v) for v in t.split(',')], default=[],
+                        help='pressure values, 0..255, sent while held')
+    parser.add_argument('--every', type=int, default=10, help='ms between pressure values')
+    parser.add_argument('--key', choices=('bridge', 'panel', 'none'), default='bridge',
+                        help="the pad's key: through the input bridge (as the panel's button "
+                             "messages), as a panel key message, or not at all")
+    args = parser.parse_args(args)
+    if any(p not in pads.PADS for p in args.pads):
+        parser.error('pads are %s' % ','.join(pads.PADS))
+    if args.raw is None and not 1 <= args.vel <= 127 or args.raw is not None and not 0 <= args.raw <= 255:
+        parser.error('use --vel 1..127 or --raw 0..255')
+    if not 1 <= args.hold <= 5000 or not 0 <= args.gap <= 5000 or not 1 <= args.every <= 1000:
+        parser.error('use --hold 1..5000, --gap 0..5000 and --every 1..1000 ms')
+    if any(not 0 <= v <= 255 for v in args.pressure):
+        parser.error('pressure values are 0..255')
+    return args
+
+
+def cmd_pad(d, args):
+    caps = pad_caps(d)
+    raw = args.raw if args.raw is not None else pads.raw_for(args.vel, caps['threshold'])
+    with RemoteKeys(d) as keys:
+        for i, name in enumerate(args.pads):
+            if i:
+                time.sleep(args.gap / 1000)
+            keys.pads(pads.hit(name, raw, args.hold, args.pressure, args.every,
+                               None if args.key == 'none' else args.key))
+            print('%s struck: raw %d, velocity %d' % (name, raw,
+                                                       pads.velocity(raw, caps['threshold'])))
+
+
+def cmd_padcap(d, args):
+    """padcap [SECONDS] [--out FILE.json]: log the panel's bytes and print them."""
+    out = None
+    if '--out' in args:
+        i = args.index('--out')
+        out, args = args[i + 1], args[:i] + args[i + 2:]
+    seconds = float(args[0]) if args else 10.0
+    caps = pad_caps(d)
+    entries, at = [], 0
+    d.call(pads.req_capture, 1)
+    print('logging the panel for %g s: play the pads now' % seconds)
+    end = time.monotonic() + seconds
+    try:
+        while True:
+            done = time.monotonic() >= end
+            if done:
+                d.call(pads.req_capture, 0)
+            while True:
+                logged, first, got = pads.decode_read(d.call(pads.req_capture_read, at))
+                if first > at:
+                    print('  (%d bytes lost: the log holds %d)' % (first - at, caps['log']))
+                entries += got
+                at = first + len(got)
+                if at >= logged:
+                    break
+            if done:
+                break
+            time.sleep(0.05)
+    finally:
+        try:
+            d.call(pads.req_capture, 0)
+        except Exception:
+            pass
+    msgs = pads.messages(entries)
+    t0 = msgs[0]['t'] if msgs else 0
+    for m in msgs:
+        print('%9.2f ms  %s%s' % (((m['t'] - t0) & 0xFFFFFFFF) / pads.TICKS_PER_MS,
+                                  pads.describe(m, caps['threshold']), '  (ours)' if m['ours'] else ''))
+    print('%d bytes, %d messages; threshold %d' % (len(entries), len(msgs), caps['threshold']))
+    if out:
+        pads.save(out, entries, caps['threshold'])
+        print('saved %s' % out)
+
+
+def cmd_padplay(d, args):
+    """padplay FILE.json [--pads BD,SD]: send the logged pad messages again."""
+    which = None
+    if '--pads' in args:
+        i = args.index('--pads')
+        which, args = [p.strip().upper() for p in args[i + 1].split(',')], args[:i] + args[i + 2:]
+    entries, _threshold = pads.load(args[0])
+    scripts = pads.replay_script(pads.messages(entries), which)
+    if not scripts:
+        raise ValueError('the log holds no pad messages')
+    pad_caps(d)
+    with RemoteKeys(d) as keys:
+        for s in scripts:
+            keys.pads(s)
+    print('played %d events in %d scripts' % (sum(map(len, scripts)), len(scripts)))
+
+
 COMMANDS = {'cfw': cmd_cfw, 'stats': cmd_stats, 'peek': cmd_peek, 'dump': cmd_dump, 'keys': cmd_keys,
-            'turn': cmd_turn,
+            'turn': cmd_turn, 'pad': cmd_pad, 'padcap': cmd_padcap, 'padplay': cmd_padplay,
             'watch': cmd_watch}
 
 
@@ -648,7 +792,7 @@ def main(argv=None):
     if not argv or argv[0] not in COMMANDS:
         sys.exit(__doc__)
     args = (key_args(argv[1:]) if argv[0] == 'keys' else turn_args(argv[1:]) if argv[0] == 'turn'
-            else argv[1:])
+            else pad_args(argv[1:]) if argv[0] == 'pad' else argv[1:])
     if sys.platform == 'win32':
         from winmidi import Port
     else:

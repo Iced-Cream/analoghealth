@@ -1,6 +1,12 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 #include "remote_keys.h"
 #include "core_candidate.h"
+#ifdef RK_PADS
+#include "remote_pads.h"
+#define RK_SCRIPT_MAX RP_MAX_EVENTS
+#else
+#define RK_SCRIPT_MAX 0
+#endif
 
 #ifndef RK_OS_MINOR
 #error "RK_OS_MINOR must identify the OS port"
@@ -124,14 +130,101 @@ static int report(unsigned char *reply)
     return 15 + RK_BITMAP;
 }
 
+#ifdef RK_PADS
+/* A pad's key bit through the bridge, kept in the session's keys so a cancel
+ * lets go of it too. Called by the pad player with the lock held. */
+int rk_pad_key(unsigned pad, unsigned down)
+{
+    unsigned id, group, target;
+    int r;
+    for (id = 1; id <= RK_KEY_COUNT && codes[id] != 0x90 + pad; ++id)
+        ;                                       /* BD..CB are codes 0x90..0x9b */
+    if (id > RK_KEY_COUNT || !keymap[id].mask) return CORE_KEYS_INVALID;
+    group = keymap[id].group;
+    target = down ? masks[group] | keymap[id].mask : masks[group] & ~keymap[id].mask;
+    r = core_keys_set(group, target);
+    if (r == CORE_KEYS_OK) masks[group] = target;
+    return r;
+}
+
+/* PAD CAPS, CAPTURE and CAPTURE READ observe; PAD RUN is one operation of the
+ * key session, as an ACTION is (docs/PADS.md). */
+static int pad_receive(unsigned command, const unsigned char *packed, unsigned length,
+                       unsigned char *reply)
+{
+    static unsigned char request[16 + 4 * RP_MAX_EVENTS];
+    unsigned count, n = 0, owner, number, sr;
+    int result = 4;
+    reply[0] = packed[1] | ((packed[0] << 1) & 0x80);
+    reply[1] = packed[2] | ((packed[0] << 2) & 0x80);
+    reply[2] = command | 0x80;
+    reply[3] = RK_INVALID;
+    if (command == RK_PAD_RUN) {
+        for (n = 1; n <= RP_MAX_EVENTS; ++n) {
+            count = 12 + 4 * n;
+            if (length == count + (count + 6) / 7) break;
+        }
+        if (n > RP_MAX_EVENTS) return 4;
+    } else {
+        count = command == RK_PAD_CAPS ? 3 : command == RK_CAPTURE ? 4 : 7;
+    }
+    if (!unpack(packed, length, request, count)) return 4;
+    reply[3] = RK_OK;
+    if (command == RK_PAD_CAPS) {
+        put16(reply + 4, RP_REVISION);
+        reply[6] = RP_PADS; reply[7] = RP_MAX_EVENTS;
+        put16(reply + 8, RP_MAX_MS);
+        put16(reply + 10, RP_LOG);
+        reply[12] = rp_threshold();
+        reply[13] = !rk_off;
+        return 14;
+    }
+    if (command == RK_CAPTURE) {
+        if (request[3] > 2) { reply[3] = RK_INVALID; return 4; }
+        put32(reply + 4, rp_capture(request[3]));
+        return 8;
+    }
+    if (command == RK_CAPTURE_READ)
+        return 4 + rp_read(get32(request + 3), reply + 4);
+    if (rk_off) { reply[3] = RK_OFF; return 4; }
+    owner = get32(request + 3);
+    number = get32(request + 7);
+    sr = core_keys_lock();
+    if (!owner || !number || request[11] != n || !rp_valid(request + 12, n)) {
+        reply[3] = RK_INVALID;
+    } else if (owner != session) {
+        reply[3] = RK_STALE;
+    } else if (number == operation) {
+        if (action != RK_PAD) reply[3] = RK_INVALID;   /* a repeat: the latest report */
+    } else if (closed || number < operation || operation == 0xffffffffu || number != operation + 1) {
+        reply[3] = RK_STALE;
+    } else if (cleanup || state == RK_ACCEPTED || owned() || rp_state() != RP_IDLE) {
+        reply[3] = RK_BUSY;
+    } else {
+        operation = number; action = RK_PAD; key = 0; duration = 0;
+        state = RK_ACCEPTED; reason = RK_OK; tapping = 0;
+        started = rk_now();
+        rp_take_result();
+        rp_start(request + 12, n, started);
+    }
+    if (reply[3] == RK_OK) result = report(reply);
+    core_keys_unlock(sr);
+    return result;
+}
+#endif
+
 int rk_receive(const unsigned char *packed, unsigned length, unsigned char *reply)
 {
-    unsigned char request[16];
+    static unsigned char request[16 + 4 * RK_SCRIPT_MAX];
     unsigned command, count, owner, number, a, k, ms, sr;
     int result = 4;
     if (length < 4) return 0;
     locate();
     command = packed[3] | ((packed[0] << 3) & 0x80);
+#ifdef RK_PADS
+    if (command >= RK_PAD_CAPS && command <= RK_PAD_RUN)
+        return pad_receive(command, packed, length, reply);
+#endif
     if (command < RK_CAPS || command > RK_CANCEL) return 0;
     reply[0] = packed[1] | ((packed[0] << 1) & 0x80);
     reply[1] = packed[2] | ((packed[0] << 2) & 0x80);
@@ -218,11 +311,34 @@ void rk_tick(void *ctrl)
     locate();
     /* shortcut: a >32 s UI stall can wrap DTIM0; use a wider clock if required. */
     if ((held_key && now - held_start >= held_ticks) ||
-        (state == RK_ACCEPTED && !tapping && now - started >= MAX_HOLD_MS * TICKS_PER_MS))
+        (state == RK_ACCEPTED && !tapping && action != RK_PAD &&
+         now - started >= MAX_HOLD_MS * TICKS_PER_MS))
         cleanup = RK_EXPIRED;
     /* Turned off: let go of what the session holds or is about to do. */
     if (rk_off && !cleanup && (owned() || state == RK_ACCEPTED))
         cleanup = RK_CANCELLED;
+#ifdef RK_PADS
+    /* The pad player stops itself (rp_render); a cancel stops it here and
+     * waits until it has let go of every pad. */
+    if (cleanup && rp_state() != RP_IDLE) {
+        rp_abort();
+        rp_flush();
+        if (rp_state() != RP_IDLE) {
+            core_keys_unlock(sr);
+            return;
+        }
+        rp_take_result();
+    }
+    if (!cleanup && state == RK_ACCEPTED && action == RK_PAD) {
+        result = rp_take_result();
+        if (result) {
+            state = result == 1 ? RK_COMPLETED : RK_FAILED;
+            reason = result == 1 ? RK_OK : RK_BUSY;
+        }
+        core_keys_unlock(sr);
+        return;
+    }
+#endif
     if (cleanup) {
         for (group = 0; group < CORE_KEYS_GROUPS; ++group) {
             if (core_keys_set(group, 0) != CORE_KEYS_OK) break;
