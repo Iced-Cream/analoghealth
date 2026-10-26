@@ -136,9 +136,14 @@ def hit(pad, raw, hold_ms=100, pressure=(), every_ms=10, key='bridge'):
 def messages(entries):
     """Log entries [(time, byte, flags)] -> panel messages
     [{'t': ticks, 'bytes': [...], 'ours': bool}], split where the receiver
-    took a byte as a header (flag bit 1)."""
-    out = []
+    took a byte as a header (flag bit 1). The log's clock wraps about every
+    32.5 s; times come back unwrapped, assuming no gap between bytes as long."""
+    out, prev, wraps = [], None, 0
     for t, byte, flags in entries:
+        if prev is not None and t < prev:
+            wraps += 1
+        prev = t
+        t += wraps << 32
         if flags & 2 or not out:
             out.append({'t': t, 'bytes': [byte], 'ours': bool(flags & 1)})
         else:
@@ -173,11 +178,12 @@ def describe(msg, threshold=None):
     return '%-6s %s' % (data, text)
 
 
-def replay_script(msgs, pads=None):
-    """Captured panel messages -> scripts that send the pad messages again with
-    their timing: pressure, strike, release and key messages as they were, and
-    button-group changes to a pad's bit as bridge key events. Split into
-    scripts of at most MAX_EVENTS events and MAX_MS each."""
+def replay_plan(msgs, pads=None):
+    """Captured panel messages -> [(start ms from the first, script)]: scripts
+    that send the pad messages again with their timing: pressure, strike,
+    release and key messages as they were, and button-group changes to a pad's
+    bit as bridge key events. Split into scripts of at most MAX_EVENTS events
+    and MAX_MS each."""
     wanted = set(range(len(PADS))) if pads is None else {PADS.index(p) for p in pads}
     events, held = [], {}
     for m in msgs:
@@ -198,19 +204,11 @@ def replay_script(msgs, pads=None):
     if not events:
         return []
     # Split only where no pad is down: the firmware lets go of every pad at the
-    # end of a script.
-    scripts, cur, base, down = [], [], None, set()
+    # end of a script. Cut the events into phrases at those points, then pack
+    # whole phrases into scripts.
+    phrases, cur, down = [], [], set()
     for t, h, d in events:
-        if base is not None and not down and (len(cur) == MAX_EVENTS
-                                              or (t - base) // TICKS_PER_MS > MAX_MS):
-            scripts.append(cur)
-            cur, base = [], None
-        if base is None:
-            base = t
-        ms = (t - base) // TICKS_PER_MS
-        if len(cur) == MAX_EVENTS or ms > MAX_MS:
-            raise ValueError('a held pad runs past %d events or %d ms' % (MAX_EVENTS, MAX_MS))
-        cur.append((ms, h, d))
+        cur.append((t, h, d))
         kind, p = h >> 4, h & 15
         if kind == STRIKE:
             down.add(('strike', p))
@@ -218,8 +216,47 @@ def replay_script(msgs, pads=None):
             down.discard(('strike', p))
         elif kind in (KEY, BRIDGE):
             (down.add if d else down.discard)(('key', kind, p))
-    scripts.append(cur)
-    return [check(s) for s in scripts]
+        if not down:
+            phrases.append(cur)
+            cur = []
+    if cur:
+        phrases.append(cur)
+    scripts, script = [], []
+    for phrase in phrases:
+        if len(phrase) > MAX_EVENTS:
+            phrase = _thin_pressure(phrase)
+        if (len(phrase) > MAX_EVENTS
+                or (phrase[-1][0] - phrase[0][0]) // TICKS_PER_MS > MAX_MS):
+            raise ValueError('a held pad runs past %d events or %d ms' % (MAX_EVENTS, MAX_MS))
+        if script and (len(script) + len(phrase) > MAX_EVENTS
+                       or (phrase[-1][0] - script[0][0]) // TICKS_PER_MS > MAX_MS):
+            scripts.append(script)
+            script = []
+        script += phrase
+    scripts.append(script)
+    t0 = scripts[0][0][0]
+    return [((s[0][0] - t0) / TICKS_PER_MS,
+             check([((t - s[0][0]) // TICKS_PER_MS, h, d) for t, h, d in s]))
+            for s in scripts]
+
+
+def replay_script(msgs, pads=None):
+    """replay_plan without the start times."""
+    return [s for _, s in replay_plan(msgs, pads)]
+
+
+def _thin_pressure(phrase):
+    """A held pad's pressure can stream hundreds of messages; keep every other
+    event and as many pressure messages, evenly spread, as fit one script."""
+    keep = [i for i, e in enumerate(phrase) if e[1] >> 4 != PRESSURE]
+    press = [i for i, e in enumerate(phrase) if e[1] >> 4 == PRESSURE]
+    room = MAX_EVENTS - len(keep)
+    if room == 1:
+        keep.append(press[-1])
+    elif room > 1:
+        # first and last pressure (the last is usually 0) always kept
+        keep += {press[round(k * (len(press) - 1) / (room - 1))] for k in range(room)}
+    return [phrase[i] for i in sorted(keep)]
 
 
 def save(path, entries, threshold):

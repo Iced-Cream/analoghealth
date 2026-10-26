@@ -777,23 +777,32 @@ def cmd_padplay(d, args):
         i = args.index('--log')
         out, args = args[i + 1], args[:i] + args[i + 2:]
     entries, _threshold = pads.load(args[0])
-    scripts = pads.replay_script(pads.messages(entries), which)
-    if not scripts:
+    plan = pads.replay_plan(pads.messages(entries), which)
+    if not plan:
         raise ValueError('the log holds no pad messages')
+    scripts = [s for _, s in plan]
     caps = pad_caps(d)
-    got, at = [], 0
+    got, at, late = [], 0, 0.0
     if out:
         d.call(pads.req_capture, 1)
     try:
         with RemoteKeys(d) as keys:
-            for s in scripts:
+            begin = time.monotonic()
+            for start, s in plan:
+                # each script at its own place in the take, not straight after the last
+                wait = begin + start / 1000 - time.monotonic()
+                if wait > 0:
+                    time.sleep(wait)
+                else:
+                    late = max(late, -wait * 1000)
                 keys.pads(s)
                 if out:
                     at = _drain(d, at, got)
     finally:
         if out:
             d.call(pads.req_capture, 0)
-    print('played %d events in %d scripts' % (sum(map(len, scripts)), len(scripts)))
+    print('played %d events in %d scripts; latest script start %.1f ms late'
+          % (sum(map(len, scripts)), len(scripts), late))
     if out:
         at = _drain(d, at, got)
         pads.save(out, got, caps['threshold'])

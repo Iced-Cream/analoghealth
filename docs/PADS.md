@@ -91,4 +91,12 @@ replay fed the OS and compares it with the original, message by message.
   of value / 2, the log showed the emulator's own pad presses (strike, button
   group bit, release), and `padplay` of that log gave the same notes within
   about 1 ms of the logged timing.
-- Not yet on a unit.
+- On a Rytm MKII (2026-10-26, build AH13): a remote BD hit at velocity 100;
+  `padcap` of 30 s of real playing (78 BD hits, nothing lost); `padplay` of it
+  with every strike force, release and key message byte for byte. A held pad
+  sends pressure about every 1.5 ms, up to 300 messages in one press, so
+  `padplay` keeps an even subset of a press's pressure when the press alone
+  would not fit one script. Timing: within 2 ms where the playing leaves gaps
+  between scripts; in a dense passage scripts run back to back, each waiting
+  for the last to be reported done over USB, and the replay fell up to 575 ms
+  behind before catching up at the next gap.
