@@ -210,6 +210,40 @@ class Pads(unittest.TestCase):
             keys.operation -= 1
             raise
 
+    # Shots while a pad is down (pad step's shots=FILE@MS).
+
+    def test_between_runs_while_the_pad_is_down(self):
+        seen = []
+
+        def between(ms):
+            seen.append((ms, list(self.fed())))
+        with self.sim_time(), usb.RemoteKeys(self.diag) as keys:
+            keys.pads(pads.hit('SD', 90, 400, [100, 120], 100, key=None), between=between)
+        down = [ms for ms, fed in seen if 0xA1 in fed and 0xB1 not in fed]
+        self.assertTrue(down and max(down) > 150, seen[:5])
+        self.assertEqual(seen, sorted(seen, key=lambda s: s[0]))   # time only goes forward
+
+    def test_pad_shots_parse(self):
+        import analogrun
+        self.assertEqual(analogrun.pad_shots('b.png@900,a.png@100', 1000, 1),
+                         [(100, 'a.png'), (900, 'b.png')])
+        self.assertEqual(analogrun.pad_shots(None, 100, 2), [])
+        for text, hold, n in (('a.png@1000', 1000, 1), ('a.png@x', 1000, 1), ('a.png', 1000, 1),
+                              ('a.png@10', 1000, 2), ('@10', 1000, 1)):
+            with self.assertRaises(ValueError):
+                analogrun.pad_shots(text, hold, n)
+
+    def test_shots_during_takes_each_once_in_order(self):
+        import analogrun
+        taken = []
+        session = types.SimpleNamespace(shot=lambda name: (taken.append(name),
+                                                           types.SimpleNamespace(w=128, h=64, lit=lambda: 1))[1])
+        between = analogrun.Session.shots_during(session, [(100, 'a.png'), (300, 'b.png')])
+        with contextlib.redirect_stdout(io.StringIO()):
+            for ms in (20, 120, 150, 310, 500):
+                between(ms)
+        self.assertEqual(taken, ['a.png', 'b.png'])
+
     def test_caps_queue(self):
         caps = usb.pad_caps(self.diag)
         self.assertEqual((caps['revision'], caps['queue']), (2, 3))

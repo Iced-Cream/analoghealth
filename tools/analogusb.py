@@ -350,10 +350,13 @@ class RemoteKeys:
             self.action(TURN, encoder, ((sign * size) & 0xFF) << 8 | ticks)
             left -= size * ticks
 
-    def pads(self, events):
+    def pads(self, events, between=None):
         """Run one pad script (analogpads: [(ms, header, data)]) as one operation and
-        wait until the firmware has played it and let go of every pad."""
+        wait until the firmware has played it and let go of every pad. `between(ms)` runs
+        while waiting, with the milliseconds since the script was sent (a shot during the
+        press, say)."""
         pads.check(events)
+        sent = time.monotonic()
         self.operation += 1
         try:
             payload = self.diag.call(pads.req_pad_run, self.session, self.operation, events,
@@ -368,6 +371,8 @@ class RemoteKeys:
         while report['state'] == 'accepted':
             if time.monotonic() >= deadline:
                 raise TimeoutError('pad script still running; not replayed')
+            if between:
+                between((time.monotonic() - sent) * 1000)
             time.sleep(0.02)
             report = self.status()
         if report['state'] != 'completed':

@@ -37,9 +37,12 @@ Steps (one per line or separated by ';'; '#' starts a comment):
                           encoder counts, STEP of them per UI tick (20 a second); a
                           list menu needs many (docs/REMOTE-KEYS.md, TURN)
     pad PADS [VEL] [HOLD_MS] [raw=R] [pressure=V,V,..] [every=MS] [key=bridge|panel|none]
+        [shots=FILE@MS,..]
                           Rytm pads struck as the panel strikes them (analoghealth 1.3):
                           PADS one name or several (BD,SD), VEL 1-127 (default 100) or the
-                          raw force R, held HOLD_MS (default 100), pressure values every MS
+                          raw force R, held HOLD_MS (default 100), pressure values every MS;
+                          shots: screenshots while the pad is down, each MS after the strike
+                          (one pad only; MS below HOLD_MS)
     padplay FILE.json [pads=BD,SD]  a pad performance logged with analogusb.py padcap, again
     shot FILE             screenshot: .png (4x) or .bin (raw framebuffer)
     expect-screen NAME [S]  stop unless the screen equals NAME.bin (in the plan's refs
@@ -189,6 +192,25 @@ def ours(m):
     return m.startswith(elkrpc.HEADER) or (m.startswith(ELEKTRON) and m[4:6] == b'\x7d\x00')
 
 
+def pad_shots(text, hold_ms, pads):
+    """`shots=FILE@MS,FILE@MS` of a pad step -> [(ms, file)] in time order: screenshots
+    while the pad is down, so each MS must fall before the release at HOLD_MS. One pad
+    per step (several pads play one after another, each with its own timing)."""
+    if not text:
+        return []
+    if pads != 1:
+        raise ValueError('shots= needs a single pad')
+    out = []
+    for item in text.split(','):
+        name, at, ms = item.rpartition('@')
+        if not at or not name or not ms.isdigit():
+            raise ValueError('shots=FILE@MS,.. (e.g. shots=press.png@500)')
+        if not 0 <= int(ms) < hold_ms:
+            raise ValueError('shot %s at %s ms: the pad is let go at %d ms' % (name, ms, hold_ms))
+        out.append((int(ms), name))
+    return sorted(out)
+
+
 def is_dump(m):
     """Elektron SysEx that is neither the RPC channel nor analoghealth's."""
     return m.startswith(ELEKTRON) and not m.startswith(elkrpc.HEADER) and m[4:6] != b'\x7d\x00'
@@ -242,6 +264,18 @@ class Session:
             fh.write(screen.pixels if name.endswith('.bin') else screen.png(scale))
         return screen
 
+    def shots_during(self, shots):
+        """A `between` for RemoteKeys.pads: each (ms, file) shot once the script has been
+        running that long; the line says when it was really taken."""
+        left = list(shots)
+
+        def between(ms):
+            while left and ms >= left[0][0]:
+                at, name = left.pop(0)
+                s = self.shot(name)
+                say('  %s: %dx%d, %d lit, at %.0f ms (asked %d)' % (name, s.w, s.h, s.lit(), ms, at))
+        return between
+
     def cc(self, ch, num, val):
         self.port.send_short(0xB0 | (ch - 1), num, val)
 
@@ -278,8 +312,11 @@ class Session:
         elif op == 'pad':
             opts = dict(w.split('=', 1) for w in a[1:] if '=' in w)
             a = [w for w in a if '=' not in w]
-            if set(opts) - {'raw', 'pressure', 'every', 'key'} or not 1 <= len(a) <= 3:
-                raise ValueError('pad PADS [VEL] [HOLD_MS] [raw=R] [pressure=V,..] [every=MS] [key=..]')
+            if set(opts) - {'raw', 'pressure', 'every', 'key', 'shots'} or not 1 <= len(a) <= 3:
+                raise ValueError('pad PADS [VEL] [HOLD_MS] [raw=R] [pressure=V,..] [every=MS] [key=..]'
+                                 ' [shots=FILE@MS,..]')
+            shots = pad_shots(opts.get('shots'), num(a[2]) if len(a) > 2 else 100,
+                              len(a[0].split(',')))
             threshold = pad_caps(self.diag)['threshold']
             raw = (num(opts['raw']) if 'raw' in opts
                    else analogpads.raw_for(num(a[1]) if len(a) > 1 else 100, threshold))
@@ -290,7 +327,8 @@ class Session:
             for name in a[0].upper().split(','):
                 self.keys.pads(analogpads.hit(name, raw, num(a[2]) if len(a) > 2 else 100, pressure,
                                               num(opts.get('every', '10')),
-                                              None if key == 'none' else key))
+                                              None if key == 'none' else key),
+                               between=self.shots_during(shots) if shots else None)
                 say('  %s struck: raw %d, velocity %d' % (name, raw, analogpads.velocity(raw, threshold)))
         elif op == 'padplay':
             which = [w[5:].upper().split(',') for w in a[1:] if w.startswith('pads=')]
