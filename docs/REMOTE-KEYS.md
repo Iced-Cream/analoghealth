@@ -54,6 +54,20 @@ exact decoded length, refusing truncated, oversized and noncanonical input.
   A longer turn is several TURN actions. Key IDs are those of `keys-ar2.def` or `keys-a4.def` (see [the button
   names](BUTTONS.md)). The stock driver makes the UI events; no gesture or
   menu policy is encoded.
+- **TURN sends raw encoder counts**, the same counts the panel's encoders
+  send, not value steps or list entries. The OS applies its own dead zone and
+  acceleration. In the emulator, remote turns and panel turns moved the same
+  screens by the same amounts for the same counts. So a turn that changes
+  nothing comes from the OS's input handling, not from the remote path.
+  How many counts a change takes depends on what is turned:
+  - On a parameter page, a few counts move a value.
+  - A list menu needs many more. Measured in the emulator on the Rytm 1.74
+    LFO DESTINATION list: about 42-56 counts before the cursor leaves the
+    first entry, then about 24-32 counts per entry (fewer when the counts come
+    quickly). Small turns a second apart may never add up to a step.
+  - A turn back by the same counts can land somewhere else.
+  These figures are emulator measurements. How many raw counts one hand
+  detent sends has not been measured on hardware yet.
 
 Sessions must be nonzero. One operation can be pending. Revision 5 allows up
 to four persistent holds at once (revision 4: one), each with its own lease,

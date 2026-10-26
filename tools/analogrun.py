@@ -33,7 +33,9 @@ Steps (one per line or separated by ';'; '#' starts a comment):
     release KEY
     keys SEQ              as analogusb.py keys: 'GLOBAL,DOWN,FUNC(YES)'; with key revision 5,
                           several holds: 'T5+FUNC(RECORD)' (pressed in order, let go in reverse)
-    turn ENC DELTA [STEP] encoder turn, if the analoghealth build has them
+    turn ENC DELTA [STEP] encoder turn, if the analoghealth build has them: DELTA raw
+                          encoder counts, STEP of them per UI tick (20 a second); a
+                          list menu needs many (docs/REMOTE-KEYS.md, TURN)
     pad PADS [VEL] [HOLD_MS] [raw=R] [pressure=V,V,..] [every=MS] [key=bridge|panel|none]
                           Rytm pads struck as the panel strikes them (analoghealth 1.3):
                           PADS one name or several (BD,SD), VEL 1-127 (default 100) or the
