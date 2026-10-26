@@ -61,7 +61,9 @@ The A4 answers them with status 2, unknown command.
   it falls 2 s behind. At its end, and on CANCEL, an expiry or REMOTE KEYS
   turned off, the firmware lets go of every pad the script left down: the
   release, the key up and the bridge bit. While a script runs, key actions are
-  refused as busy, and a script is refused while the session holds a key.
+  refused as busy, and a script is refused while the session holds a key
+  (key revision 5: only while it holds a pad's own key, so SCNE or PERF can be
+  held across a script).
 - **PAD NEXT** (revision 2) queues a script behind the one playing, as the
   session's next operation: it starts `after` ms (at most 10000) after the
   start of the script before it, or once that one has played out, whichever

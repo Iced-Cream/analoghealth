@@ -28,9 +28,11 @@ Ping) picks its SysEx device byte.
 Steps (one per line or separated by ';'; '#' starts a comment):
 
     tap KEY [MS]          press and release (analoghealth build)
-    hold KEY [MS]         press; the firmware lets go after MS (default its maximum, 2 s)
+    hold KEY [MS]         press; the firmware lets go after MS (default its maximum, 2 s);
+                          key revision 5 holds up to 4 keys at once, each with its own MS
     release KEY
-    keys SEQ              as analogusb.py keys: 'GLOBAL,DOWN,FUNC(YES)'
+    keys SEQ              as analogusb.py keys: 'GLOBAL,DOWN,FUNC(YES)'; with key revision 5,
+                          several holds: 'T5+FUNC(RECORD)' (pressed in order, let go in reverse)
     turn ENC DELTA [STEP] encoder turn, if the analoghealth build has them
     pad PADS [VEL] [HOLD_MS] [raw=R] [pressure=V,V,..] [every=MS] [key=bridge|panel|none]
                           Rytm pads struck as the panel strikes them (analoghealth 1.3):
@@ -101,7 +103,7 @@ import elkrpc
 import testplan
 import unitdata
 import writepolicy
-from analogusb import Diag, RemoteKeys, decode_stats, key_sequence, peek, req_stats, pad_caps
+from analogusb import Diag, RemoteKeys, decode_stats, key_sequence, peek, play_sequence, req_stats, pad_caps
 import analogpads
 
 ELEKTRON = bytes([0xF0, 0x00, 0x20, 0x3C])
@@ -251,12 +253,7 @@ class Session:
         self.port.send_short(0x80 | (ch - 1), note, 0)
 
     def key_steps(self, text):
-        for hold, tap in key_sequence(text):
-            if hold:
-                self.keys.press(hold)
-            self.keys.tap(tap)
-            if hold:
-                self.keys.release(hold)
+        play_sequence(self.keys, key_sequence(text))
 
     def step(self, line):
         words = shlex.split(line, comments=True)

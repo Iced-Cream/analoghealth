@@ -1,4 +1,4 @@
-# Bounded key protocol, revision 4
+# Bounded key protocol, revision 5
 
 Analog Rytm MKII, OS 1.74, and Analog Four MKII, OS 1.56. Revision 3 is digihealth's revision 2 with 128-bit
 key maps, because the Rytm has 78 keys, the A4 89, and revision 2's maps hold 64.
@@ -6,7 +6,8 @@ Revision 4 adds action 4, TURN, for the encoders, and the encoder count to
 CAPABILITIES. The
 commands, actions, states and rules are revision 2's. The messages use the
 USB-only SysEx channel the diagnostics use; HELLO, STATS, PEEK and
-diagnostics revision 1 are unchanged.
+diagnostics revision 1 are unchanged. Revision 5 lets several keys be held at once (below); its messages are
+revision 4's.
 
 DIN source masks 8 and 16 are refused; USB source masks 2 and 4 are accepted.
 This is ownership and duplicate suppression, not authentication. The SETTINGS
@@ -33,7 +34,7 @@ exact decoded length, refusing truncated, oversized and noncanonical input.
 | `0x13 STATUS` | `u32 session, u32 operation` | report |
 | `0x14 CANCEL` | `u32 session` | report |
 
-- **Capabilities:** revision 4; product 3 (Analog Rytm MKII), OS 1.74, or product 4 (Analog Four MKII), OS 1.56. The
+- **Capabilities:** revision 5 (4 on older builds); product 3 (Analog Rytm MKII), OS 1.74, or product 4 (Analog Four MKII), OS 1.56. The
   128-bit map marks logical key ID minus one; 78 bits are set on the Rytm, 89 on the A4. Default tap
   100 ms, maximum tap 250 ms, maximum press lease 2000 ms, 9 encoders on the Rytm and 11 on the A4. The client checks
   revision, product, OS and map before OPEN, and refuses names the map lacks
@@ -54,8 +55,13 @@ exact decoded length, refusing truncated, oversized and noncanonical input.
   names](BUTTONS.md)). The stock driver makes the UI events; no gesture or
   menu policy is encoded.
 
-Sessions must be nonzero. One operation can be pending, with at most one
-persistent hold and a tap of another key, across groups too. Operations start
+Sessions must be nonzero. One operation can be pending. Revision 5 allows up
+to four persistent holds at once (revision 4: one), each with its own lease,
+and taps and turns while they are held, across groups too: trig + FUNC +
+RECORD is PRESS trig, PRESS FUNC, TAP RECORD, then the releases. A PRESS of a
+fifth key is refused as busy. The first lease to run out ends the session's
+holds, as an expiry. A pad script (PAD RUN) may play while keys are held, but
+not while the session holds a pad's own key. Operations start
 at 1 and go up by one without wrapping. Duplicate IDs with identical payloads
 return the latest state; conflicting duplicates and older or skipped IDs are
 refused. A repeated PRESS never renews a hold's lease. OPEN of the current

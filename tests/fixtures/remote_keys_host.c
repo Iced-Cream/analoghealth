@@ -75,7 +75,8 @@ void host_reset(void)
     session = operation = action = key = duration = state = reason = 0;
     memset(masks, 0, sizeof(masks));
     rk_off = 0;
-    held_key = held_start = held_ticks = tap_start = 0;
+    held = tap_start = 0;
+    memset(holds, 0, sizeof holds);
     started = tapping = cleanup = closed = 0;
 #ifdef RK_PADS
     memset(script_events, 0, sizeof(script_events));

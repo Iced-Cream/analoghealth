@@ -53,7 +53,9 @@ PRESS, RELEASE, TAP, TURN = 1, 2, 3, 4
 MAX_TURNS, MAX_STEP = 30, 30            # per TURN action: UI ticks (20 a second), counts per tick
 KEY_STATES = ('none', 'accepted', 'completed', 'cancelled', 'expired', 'failed')
 PEEK_MAX = 1024
-REVISION = 4                  # digihealth's key revision 2, 128-bit key maps, encoder turns
+REVISION = 5                  # digihealth's key revision 2, 128-bit key maps, encoder turns,
+                              # several held keys (5; 4 holds one at a time)
+MAX_HELD = {4: 1, 5: 4}       # keys held at once, by key revision
 # PEEK reads DDR (cached view) and the 64 KB SRAM, and never the peripheral
 # space (a read there can clear a status bit).
 PEEK_RANGES = ((0x40000000, 0x48000000), (0x80000000, 0x80010000))
@@ -249,12 +251,13 @@ class RemoteKeys:
             raise ValueError('invalid key capabilities (an analoghealth older than key '
                              'revision %d?)' % REVISION)
         revision, product, major, minor, keys, default, tap, hold, encoders = decode_caps(payload)
-        if (revision != REVISION or product not in PRODUCTS
+        if (revision not in MAX_HELD or product not in PRODUCTS
                 or (major, minor) != PRODUCTS[product][1]
                 or keys != SUPPORTED.get(product) or not 1 <= default <= tap <= 250
                 or not 1 <= hold <= 2000 or encoders != len(ENCODERS[product])):
             raise ValueError('unsupported key helper, device, OS or limits')
         self.default_tap, self.max_tap, self.max_hold = default, tap, hold
+        self.revision, self.max_held = revision, MAX_HELD[revision]
         self.product, self.supported = product, keys
         self.keyids, self.encoders = KEYSETS[product], ENCODERS[product]
         self.session = secrets.randbits(32) or 1
@@ -466,24 +469,42 @@ class RemoteKeys:
 
 
 def key_sequence(text):
+    """'KEY' or 'HOLD(TAP)' or 'HOLD1+HOLD2(TAP)', comma-separated -> [(holds, tap)]:
+    the holds are pressed in order before the tap and let go in reverse after it."""
     steps = []
     for token in text.split(','):
-        match = re.fullmatch(r'([A-Z0-9_]+)(?:\s*\(\s*([A-Z0-9_]+)\s*\))?', token.strip())
-        if not match:
-            raise argparse.ArgumentTypeError('use KEY or HOLD(TAP), separated by commas')
+        match = re.fullmatch(r'([A-Z0-9_]+(?:\s*\+\s*[A-Z0-9_]+)*)(?:\s*\(\s*([A-Z0-9_]+)\s*\))?',
+                             token.strip())
+        if not match or '+' in match.group(1) and not match.group(2):
+            raise argparse.ArgumentTypeError('use KEY, HOLD(TAP) or HOLD+HOLD(TAP), separated by commas')
         outer, inner = match.groups()
-        hold, tap = (outer, inner) if inner else (None, outer)
-        if tap not in ALL_KEYS or hold is not None and hold not in ALL_KEYS:
+        holds, tap = ([h.strip() for h in outer.split('+')], inner) if inner else ([], outer)
+        if tap not in ALL_KEYS or any(h not in ALL_KEYS for h in holds):
             raise argparse.ArgumentTypeError('unknown button in %r' % token.strip())
-        if hold == tap:
+        if tap in holds or len(set(holds)) != len(holds):
             raise argparse.ArgumentTypeError('held and tapped buttons must differ')
-        steps.append((hold, tap))
+        steps.append((holds, tap))
     return steps
+
+
+def play_sequence(keys, steps, tap_ms=None, hold_ms=None):
+    """Run key_sequence steps: each one's holds in order, its tap, the holds let go in reverse."""
+    for holds, tap in steps:
+        most = getattr(keys, 'max_held', 1)
+        if len(holds) > most:
+            raise ValueError('this firmware holds %d key(s) at once (key revision %s); %s needs %d'
+                             % (most, getattr(keys, 'revision', '?'), '+'.join(holds), len(holds)))
+        for h in holds:
+            keys.press(h, hold_ms)
+        keys.tap(tap, tap_ms)
+        for h in reversed(holds):
+            keys.release(h)
 
 
 def key_args(args):
     parser = argparse.ArgumentParser(
-        description='INPUT is KEY, HOLD(TAP), or a comma-separated list of either.',
+        description='INPUT is KEY, HOLD(TAP) or HOLD+HOLD(TAP) (holds pressed in order), '
+                    'or a comma-separated list of them.',
         allow_abbrev=False)
     parser.add_argument('steps', type=key_sequence, metavar='INPUT')
     parser.add_argument('--tap-ms', type=int, default=100)
@@ -529,15 +550,9 @@ def cmd_turn(diag, args):
 
 def cmd_keys(diag, args):
     with RemoteKeys(diag) as keys:
-        if any(tap not in MAPS[keys.product] or hold is not None and hold not in MAPS[keys.product]
-               for hold, tap in args.steps):
+        if any(k not in MAPS[keys.product] for holds, tap in args.steps for k in holds + [tap]):
             raise ValueError('the connected device does not have the requested button')
-        for hold, tap in args.steps:
-            if hold:
-                keys.press(hold, args.hold_ms)
-            keys.tap(tap, args.tap_ms)
-            if hold:
-                keys.release(hold)
+        play_sequence(keys, args.steps, args.tap_ms, args.hold_ms)
     print('key actions completed; synthetic keys released')
 
 

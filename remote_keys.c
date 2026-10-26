@@ -63,7 +63,9 @@ extern void core_keys_unlock(unsigned sr);
 enum { TICKS_PER_MS = 132000, MAX_HOLD_MS = 2000, MAX_TAP_MS = 250 };
 static unsigned session, operation, action, key, duration, state, reason;
 static unsigned char masks[CORE_KEYS_GROUPS];
-static unsigned held_key, held_start, held_ticks, tap_start;
+/* Keys held by PRESS, each with its own lease, in the order pressed. */
+static struct hold { unsigned key, start, ticks; } holds[RK_MAX_HELD];
+static unsigned held, tap_start;
 static unsigned started, tapping, cleanup, closed, turns_left;
 
 static unsigned get32(const unsigned char *p)
@@ -79,6 +81,24 @@ static void put32(unsigned char *p, unsigned value)
 static void put16(unsigned char *p, unsigned value)
 {
     p[0] = value >> 8; p[1] = value;
+}
+
+static int holding(unsigned k)
+{
+    unsigned i;
+    for (i = 0; i < held; ++i)
+        if (holds[i].key == k) return 1;
+    return 0;
+}
+
+static void let_go(unsigned k)
+{
+    unsigned i;
+    for (i = 0; i < held; ++i)
+        if (holds[i].key == k) {
+            holds[i] = holds[--held];
+            return;
+        }
 }
 
 static unsigned owned(void)
@@ -145,6 +165,16 @@ int rk_pad_key(unsigned pad, unsigned down)
     r = core_keys_set(group, target);
     if (r == CORE_KEYS_OK) masks[group] = target;
     return r;
+}
+
+/* A script plays while keys are held (SCNE or PERF and a pad), but not while
+ * the session holds a pad's own key: its release would let go of that hold. */
+static int holds_pad_key(void)
+{
+    unsigned i;
+    for (i = 0; i < held; ++i)
+        if (codes[holds[i].key] >= 0x90 && codes[holds[i].key] <= 0x9b) return 1;
+    return 0;
 }
 
 /* PAD CAPS, CAPTURE and CAPTURE READ observe; PAD RUN is one operation of the
@@ -214,7 +244,7 @@ static int pad_receive(unsigned command, const unsigned char *packed, unsigned l
                   ? RP_ENDED : rp_queue(events, n, after, rk_now());
         if (queuing == RP_QUEUED) operation = number;
         else reply[3] = queuing == RP_FULL ? RK_BUSY : RK_STALE;
-    } else if (cleanup || state == RK_ACCEPTED || owned() || rp_state() != RP_IDLE) {
+    } else if (cleanup || state == RK_ACCEPTED || holds_pad_key() || rp_state() != RP_IDLE) {
         reply[3] = RK_BUSY;
     } else {
         operation = number; action = RK_PAD; key = 0; duration = 0;
@@ -303,7 +333,8 @@ int rk_receive(const unsigned char *packed, unsigned length, unsigned char *repl
             if (a != action || k != key || ms != duration) reply[3] = RK_INVALID;
         } else if (closed || number < operation || operation == 0xffffffffu || number != operation + 1) {
             reply[3] = RK_STALE;
-        } else if (cleanup || state == RK_ACCEPTED || (a == RK_PRESS && held_key && held_key != k)) {
+        } else if (cleanup || state == RK_ACCEPTED ||
+                   (a == RK_PRESS && !holding(k) && held == RK_MAX_HELD)) {
             reply[3] = RK_BUSY;
         } else if (a == RK_TAP && (masks[keymap[k].group] & keymap[k].mask)) {
             reply[3] = RK_OVERLAP;
@@ -321,13 +352,15 @@ int rk_receive(const unsigned char *packed, unsigned length, unsigned char *repl
 
 void rk_tick(void *ctrl)
 {
-    unsigned sr = core_keys_lock(), now = rk_now(), target, group;
+    unsigned sr = core_keys_lock(), now = rk_now(), target, group, i;
     int result;
     (void)ctrl;
     locate();
     /* shortcut: a >32 s UI stall can wrap DTIM0; use a wider clock if required. */
-    if ((held_key && now - held_start >= held_ticks) ||
-        (state == RK_ACCEPTED && !tapping && action != RK_PAD &&
+    for (i = 0; i < held; ++i)
+        if (now - holds[i].start >= holds[i].ticks)
+            cleanup = RK_EXPIRED;
+    if ((state == RK_ACCEPTED && !tapping && action != RK_PAD &&
          now - started >= MAX_HOLD_MS * TICKS_PER_MS))
         cleanup = RK_EXPIRED;
     /* Turned off: let go of what the session holds or is about to do. */
@@ -361,7 +394,7 @@ void rk_tick(void *ctrl)
             masks[group] = 0;
         }
         if (group == CORE_KEYS_GROUPS) {
-            held_key = tapping = 0;
+            held = tapping = 0;
             state = cleanup; cleanup = 0; closed = 1; reason = RK_OK;
         }
     } else if (state == RK_ACCEPTED) {
@@ -388,12 +421,13 @@ void rk_tick(void *ctrl)
         if (result == CORE_KEYS_OK) {
             masks[group] = target;
             if (action == RK_PRESS) {
-                if (!held_key) {
-                    held_key = key; held_start = now; held_ticks = duration * TICKS_PER_MS;
+                if (!holding(key)) {
+                    holds[held].key = key; holds[held].start = now;
+                    holds[held++].ticks = duration * TICKS_PER_MS;
                 }
                 state = RK_COMPLETED;
             } else if (action == RK_RELEASE) {
-                if (held_key == key) held_key = 0;
+                let_go(key);
                 state = RK_COMPLETED;
             } else if (!tapping) {
                 tapping = 1; tap_start = now;

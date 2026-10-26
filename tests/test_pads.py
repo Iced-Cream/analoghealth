@@ -93,12 +93,22 @@ class Pads(unittest.TestCase):
                 with self.assertRaises(usb._RequestRefused):
                     self.diag.call(pads.req_pad_run, keys.session, keys.operation, bad, timeout=0.25)
                 keys.operation -= 1
-            keys.press('FUNC')
+            keys.press('BD')                    # a pad's own key: its release would end the hold
             with self.assertRaises(usb._RequestRefused):
                 keys.pads([(0, 0xA0, 60)])
-            keys.release('FUNC')
+            keys.release('BD')
             keys.pads([(0, 0xA0, 60)])
             self.assertEqual(self.fed(), [0xA0, 60, 0xB0, 0])
+
+    def test_script_with_held_keys(self):
+        # SCNE + a pad: the script plays while another key is held, and leaves it held
+        with usb.RemoteKeys(self.diag) as keys:
+            keys.press('SCNE')
+            keys.pads([(0, 0xA0, 60)])
+            self.assertEqual(self.fed(), [0xA0, 60, 0xB0, 0])
+            self.assertTrue(keys.status(0)['owned'])
+            keys.release('SCNE')
+            self.assertFalse(keys.status(0)['owned'])
 
     def test_keys_wait_while_a_script_runs(self):
         keys = usb.RemoteKeys(self.diag)

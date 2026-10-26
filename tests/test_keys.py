@@ -160,6 +160,56 @@ class Keys(unittest.TestCase):
         self.assertEqual(self.group('FUNC'), 0)
         self.assertEqual(keys.status(0)['state'], 'expired')
 
+    def test_several_held_keys(self):
+        names = [n for n in MAPS[self.PRODUCT] if n not in ('FUNC', 'YES')][:4]
+        with usb.RemoteKeys(self.diag) as keys:
+            self.assertEqual((keys.revision, keys.max_held), (5, 4))
+            for n in names:
+                keys.press(n)
+            for n in names:
+                self.assertTrue(self.group(n) & self.lib.host_key_mask(self.K[n]), n)
+            with self.assertRaises(usb._RequestRefused):
+                keys.press('FUNC')                        # a fifth: busy
+            keys.press(names[0])                          # already held: fine
+            keys.release(names[1])
+            self.assertFalse(self.group(names[1]) & self.lib.host_key_mask(self.K[names[1]]))
+            keys.press('FUNC')                            # room again
+            keys.tap('YES')
+        for n in names + ['FUNC']:
+            self.assertFalse(self.group(n) & self.lib.host_key_mask(self.K[n]), n)
+
+    def test_each_hold_has_its_own_lease(self):
+        keys = usb.RemoteKeys(self.diag)
+        keys.press('FUNC', 2000)
+        keys.press('PLAY', 400)                           # the shorter lease ends the session's holds
+        self.assertTrue(self.group('FUNC') & self.lib.host_key_mask(self.K['FUNC']))
+        self.assertTrue(self.group('PLAY') & self.lib.host_key_mask(self.K['PLAY']))
+        self.lib.host_advance(500)
+        self.assertEqual(self.group('FUNC') & self.lib.host_key_mask(self.K['FUNC']), 0)
+        self.assertEqual(self.group('PLAY') & self.lib.host_key_mask(self.K['PLAY']), 0)
+        self.assertEqual(keys.status(0)['state'], 'expired')
+
+    def test_sequence_with_two_holds(self):
+        self.assertEqual(usb.key_sequence('5+FUNC(RECORD),YES'),
+                         [(['5', 'FUNC'], 'RECORD'), ([], 'YES')])
+        for bad in ('5+FUNC', 'FUNC+FUNC(YES)', 'FUNC+YES(YES)'):
+            with self.assertRaises(usb.argparse.ArgumentTypeError, msg=bad):
+                usb.key_sequence(bad)
+        port = self.port
+        with patch.dict(sys.modules, midimido=types.SimpleNamespace(Port=lambda *_: port)), \
+                patch.object(usb.sys, 'platform', 'darwin'), \
+                contextlib.redirect_stdout(io.StringIO()):
+            usb.main(['keys', '5+FUNC(RECORD)', '--tap-ms', '50'])
+        actions = [struct.unpack('>IIBBH', raw[3:]) for raw in port.sent if raw[2] == usb.ACTION]
+        self.assertEqual([(a, key) for _, _, a, key, _ in actions], [
+            (usb.PRESS, self.K['5']), (usb.PRESS, self.K['FUNC']), (usb.TAP, self.K['RECORD']),
+            (usb.RELEASE, self.K['FUNC']), (usb.RELEASE, self.K['5'])])
+
+    def test_revision_4_holds_one_key(self):
+        keys = types.SimpleNamespace(max_held=1, revision=4)
+        with self.assertRaisesRegex(ValueError, 'holds 1 key'):
+            usb.play_sequence(keys, usb.key_sequence('5+FUNC(RECORD)'))
+
     def test_unknown_names_refused_before_any_action(self):
         with self.assertRaises(SystemExit):
             with contextlib.redirect_stderr(io.StringIO()):

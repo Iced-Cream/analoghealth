@@ -19,7 +19,9 @@ enum { RK_KEY_COUNT = 89, RK_ENCODERS = 11 };         /* A-J, LEVEL */
 #else
 #error "RK_PRODUCT must be 3 (Analog Rytm MKII) or 4 (Analog Four MKII)"
 #endif
-enum { RK_REVISION = 4, RK_BITMAP = 16, RK_MAX_TURNS = 30, RK_MAX_STEP = 30 };
+/* Revision 5: up to RK_MAX_HELD keys held at once, each with its own lease,
+ * and pad scripts while keys are held. */
+enum { RK_REVISION = 5, RK_BITMAP = 16, RK_MAX_TURNS = 30, RK_MAX_STEP = 30, RK_MAX_HELD = 4 };
 
 int rk_receive(const unsigned char *packed, unsigned length, unsigned char *reply);
 void rk_tick(void *ctrl);
