@@ -13,7 +13,9 @@ enum { RK_OK, RK_INVALID, RK_UNKNOWN, RK_BUSY, RK_STALE, RK_OVERLAP, RK_OFF };
  * to CAPS. Product 3 is the Analog Rytm MKII, 4 the Analog Four MKII. */
 #if RK_PRODUCT == 3
 enum { RK_KEY_COUNT = 78, RK_ENCODERS = 9 };          /* A-H, LEVEL */
+#ifndef RK_NO_PADS                                    /* the standalone build has no pads */
 #define RK_PADS 1
+#endif
 #elif RK_PRODUCT == 4
 enum { RK_KEY_COUNT = 89, RK_ENCODERS = 11 };         /* A-J, LEVEL */
 #else

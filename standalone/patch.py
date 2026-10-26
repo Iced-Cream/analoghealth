@@ -38,7 +38,8 @@ DEVICES = {
     'analog-rytm-mk2': {
         'os': '1.74', 'version': 'RK74',
         'inc': 'ar174.inc', 'defs': [], 'keys': 'keys-ar2.def',
-        'cflags': ['-DRK_OS_MINOR=74', '-DRK_PRODUCT=3'],
+        # no remote_pads.c here, and no audio-render site for its player
+        'cflags': ['-DRK_OS_MINOR=74', '-DRK_PRODUCT=3', '-DRK_NO_PADS'],
         'defsym': {'KEY_CONTINUE': 0x40081db4, 'KEY_STATE': 0x418d1340,
                    'UI_QUEUE': 0x41943f54, 'KEY_STACK': 76, 'KEY_TABLE': 0x40285970,
                    'ENC_INPUT': 0x40082036},
