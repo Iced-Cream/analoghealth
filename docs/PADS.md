@@ -40,10 +40,11 @@ The A4 answers them with status 2, unknown command.
 
 | Command | Arguments | Reply payload |
 |---|---|---|
-| `0x18 PAD CAPS` | none | `u16 revision (1), u8 pads (12), u8 max events (48), u16 max script ms (10000), u16 log size (512), u8 threshold, u8 remote keys on` |
+| `0x18 PAD CAPS` | none | `u16 revision (2), u8 pads (12), u8 max events (48), u16 max script ms (10000), u16 log size (512), u8 threshold, u8 remote keys on, u8 queue (3)` |
 | `0x19 CAPTURE` | `u8 mode`: 1 clear and start, 0 stop, 2 neither | `u32 bytes logged` |
 | `0x1A CAPTURE READ` | `u32 from` | `u32 logged, u32 first, u8 n, n x (u32 time, u8 byte, u8 flags)` |
 | `0x1B PAD RUN` | `u32 session, u32 operation, u8 n, n x (u16 ms, u8 header, u8 value)` | a key report |
+| `0x1C PAD NEXT` | `u32 session, u32 operation, u16 after ms, u8 n, n x (u16 ms, u8 header, u8 value)` | a key report |
 
 - **The log** holds the last 512 bytes the panel sent while capturing, with
   the bus-clock time (132 MHz, wrapping about every 32.5 s) at which each
@@ -61,6 +62,19 @@ The A4 answers them with status 2, unknown command.
   turned off, the firmware lets go of every pad the script left down: the
   release, the key up and the bridge bit. While a script runs, key actions are
   refused as busy, and a script is refused while the session holds a key.
+- **PAD NEXT** (revision 2) queues a script behind the one playing, as the
+  session's next operation: it starts `after` ms (at most 10000) after the
+  start of the script before it, or once that one has played out, whichever
+  is later. Up to 3 scripts wait behind the one playing (`queue` in PAD
+  CAPS). Where a queued script follows, the pads stay down across the join;
+  the firmware lets go only at the end of the last. So a chain keeps the
+  take's timing on the unit's clock, whatever the host's latency, as long as
+  the host keeps the queue from running dry. PAD NEXT is refused as busy
+  while the queue is full or the script would start more than 10 s from now
+  (ask again later), and as stale when nothing is left playing to follow
+  (start a new chain with PAD RUN). STATUS reports the latest operation: it
+  stays accepted until the chain ends, then completed or failed; a failure or
+  CANCEL drops the rest of the queue.
 
 ## Tools
 
@@ -75,7 +89,11 @@ python tools/analogusb.py padplay take.json [--pads BD,SD]
 `padcap` prints each message with its time; `padplay` sends the logged pad
 messages again with their timing (the strike force, pressure, release and key
 messages as they were, and button messages that change a pad's bit as bridge
-key events), in scripts split where no pad is down. In analogrun:
+key events), in scripts split where no pad is down. With revision 2 it plays
+them as one chain, PAD NEXT keeping up to 3 scripts queued, and cuts a long
+press across scripts whole instead of thinning its pressure; it reports how
+often the queue ran dry (a script then starts a new chain at its time by the
+host's clock). In analogrun:
 `pad PADS [VEL] [HOLD_MS] [raw=R] [pressure=V,..] [every=MS] [key=..]` and
 `padplay FILE.json [pads=BD,SD]`. `padplay --log OUT.json` also logs what the
 replay fed the OS and compares it with the original, message by message.

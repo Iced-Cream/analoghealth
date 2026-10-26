@@ -14,7 +14,7 @@ with its own threshold t (velocity() below).
 import json
 import struct
 
-PAD_CAPS, CAPTURE, CAPTURE_READ, PAD_RUN = range(0x18, 0x1C)
+PAD_CAPS, CAPTURE, CAPTURE_READ, PAD_RUN, PAD_NEXT = range(0x18, 0x1D)
 PADS = ('BD', 'SD', 'RS', 'CP', 'BT', 'LT', 'MT', 'HT', 'CH', 'OH', 'CY', 'CB')
 PRESSURE, STRIKE, RELEASE, KEY, BRIDGE = 0x9, 0xA, 0xB, 0xC, 0x0
 KINDS = {PRESSURE: 'pressure', STRIKE: 'strike', RELEASE: 'release', KEY: 'key', BRIDGE: 'bridge key'}
@@ -80,12 +80,22 @@ def req_pad_run(seq, session, operation, events):
     return req(seq, PAD_RUN, bytes(body))
 
 
+def req_pad_next(seq, session, operation, after_ms, events):
+    """A script that starts `after_ms` after the start of the one before it."""
+    body = bytearray(struct.pack('>IIHB', session, operation, after_ms, len(events)))
+    for ms, header, data in events:
+        body += struct.pack('>HBB', ms, header, data)
+    return req(seq, PAD_NEXT, bytes(body))
+
+
 def decode_caps(p):
-    if len(p) != 10:
+    """Revision 1 has no queue (10 bytes); revision 2 adds how many scripts can
+    wait behind the one playing."""
+    if len(p) not in (10, 11):
         raise ValueError('invalid pad capabilities')
-    revision, pads, events, max_ms, log, threshold, on = struct.unpack('>HBBHHBB', p)
+    revision, pads, events, max_ms, log, threshold, on = struct.unpack_from('>HBBHHBB', p)
     return dict(revision=revision, pads=pads, events=events, max_ms=max_ms, log=log,
-                threshold=threshold, remote_keys=bool(on))
+                threshold=threshold, remote_keys=bool(on), queue=p[10] if len(p) > 10 else 0)
 
 
 def decode_read(p):
@@ -178,12 +188,17 @@ def describe(msg, threshold=None):
     return '%-6s %s' % (data, text)
 
 
-def replay_plan(msgs, pads=None):
+def replay_plan(msgs, pads=None, carry=False):
     """Captured panel messages -> [(start ms from the first, script)]: scripts
     that send the pad messages again with their timing: pressure, strike,
     release and key messages as they were, and button-group changes to a pad's
     bit as bridge key events. Split into scripts of at most MAX_EVENTS events
-    and MAX_MS each."""
+    and MAX_MS each, at whole ms from the first message, so each script's
+    events land on the take's own ms however the scripts are chained.
+
+    A press too long for one script loses some of its pressure messages,
+    evenly spread; with `carry` (a firmware with PAD NEXT, which keeps the
+    pads down where a queued script follows) it is cut across scripts whole."""
     wanted = set(range(len(PADS))) if pads is None else {PADS.index(p) for p in pads}
     events, held = [], {}
     for m in msgs:
@@ -203,12 +218,14 @@ def replay_plan(msgs, pads=None):
                         held[p] = down
     if not events:
         return []
-    # Split only where no pad is down: the firmware lets go of every pad at the
-    # end of a script. Cut the events into phrases at those points, then pack
-    # whole phrases into scripts.
+    t0 = events[0][0]
+    events = [((t - t0) // TICKS_PER_MS, h, d) for t, h, d in events]
+    # Split where no pad is down: the firmware lets go of every pad at the end
+    # of a script that nothing follows. Cut the events into phrases at those
+    # points, then pack whole phrases into scripts.
     phrases, cur, down = [], [], set()
-    for t, h, d in events:
-        cur.append((t, h, d))
+    for ms, h, d in events:
+        cur.append((ms, h, d))
         kind, p = h >> 4, h & 15
         if kind == STRIKE:
             down.add(('strike', p))
@@ -221,28 +238,39 @@ def replay_plan(msgs, pads=None):
             cur = []
     if cur:
         phrases.append(cur)
-    scripts, script = [], []
+    pieces = []
     for phrase in phrases:
+        if carry:
+            pieces += _cut(phrase)
+            continue
         if len(phrase) > MAX_EVENTS:
             phrase = _thin_pressure(phrase)
-        if (len(phrase) > MAX_EVENTS
-                or (phrase[-1][0] - phrase[0][0]) // TICKS_PER_MS > MAX_MS):
+        if len(phrase) > MAX_EVENTS or phrase[-1][0] - phrase[0][0] > MAX_MS:
             raise ValueError('a held pad runs past %d events or %d ms' % (MAX_EVENTS, MAX_MS))
-        if script and (len(script) + len(phrase) > MAX_EVENTS
-                       or (phrase[-1][0] - script[0][0]) // TICKS_PER_MS > MAX_MS):
+        pieces.append(phrase)
+    scripts, script = [], []
+    for piece in pieces:
+        if script and (len(script) + len(piece) > MAX_EVENTS or piece[-1][0] - script[0][0] > MAX_MS):
             scripts.append(script)
             script = []
-        script += phrase
+        script += piece
     scripts.append(script)
-    t0 = scripts[0][0][0]
-    return [((s[0][0] - t0) / TICKS_PER_MS,
-             check([((t - s[0][0]) // TICKS_PER_MS, h, d) for t, h, d in s]))
-            for s in scripts]
+    return [(s[0][0], check([(ms - s[0][0], h, d) for ms, h, d in s])) for s in scripts]
 
 
-def replay_script(msgs, pads=None):
+def _cut(phrase):
+    """A phrase in pieces of at most MAX_EVENTS events and MAX_MS each."""
+    pieces = [[]]
+    for e in phrase:
+        if pieces[-1] and (len(pieces[-1]) == MAX_EVENTS or e[0] - pieces[-1][0][0] > MAX_MS):
+            pieces.append([])
+        pieces[-1].append(e)
+    return pieces
+
+
+def replay_script(msgs, pads=None, carry=False):
     """replay_plan without the start times."""
-    return [s for _, s in replay_plan(msgs, pads)]
+    return [s for _, s in replay_plan(msgs, pads, carry)]
 
 
 def _thin_pressure(phrase):

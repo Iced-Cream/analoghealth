@@ -148,20 +148,23 @@ int rk_pad_key(unsigned pad, unsigned down)
 }
 
 /* PAD CAPS, CAPTURE and CAPTURE READ observe; PAD RUN is one operation of the
- * key session, as an ACTION is (docs/PADS.md). */
+ * key session, as an ACTION is, and PAD NEXT one that follows the script
+ * before it (docs/PADS.md). */
 static int pad_receive(unsigned command, const unsigned char *packed, unsigned length,
                        unsigned char *reply)
 {
     static unsigned char request[16 + 4 * RP_MAX_EVENTS];
-    unsigned count, n = 0, owner, number, sr;
-    int result = 4;
+    const unsigned char *events = request + 12;
+    unsigned count, n = 0, owner, number, after = 0, fixed, sr;
+    int result = 4, queuing;
     reply[0] = packed[1] | ((packed[0] << 1) & 0x80);
     reply[1] = packed[2] | ((packed[0] << 2) & 0x80);
     reply[2] = command | 0x80;
     reply[3] = RK_INVALID;
-    if (command == RK_PAD_RUN) {
+    if (command == RK_PAD_RUN || command == RK_PAD_NEXT) {
+        fixed = command == RK_PAD_RUN ? 12 : 14;
         for (n = 1; n <= RP_MAX_EVENTS; ++n) {
-            count = 12 + 4 * n;
+            count = fixed + 4 * n;
             if (length == count + (count + 6) / 7) break;
         }
         if (n > RP_MAX_EVENTS) return 4;
@@ -177,7 +180,8 @@ static int pad_receive(unsigned command, const unsigned char *packed, unsigned l
         put16(reply + 10, RP_LOG);
         reply[12] = rp_threshold();
         reply[13] = !rk_off;
-        return 14;
+        reply[14] = RP_QUEUE - 1;
+        return 15;
     }
     if (command == RK_CAPTURE) {
         if (request[3] > 2) { reply[3] = RK_INVALID; return 4; }
@@ -189,8 +193,13 @@ static int pad_receive(unsigned command, const unsigned char *packed, unsigned l
     if (rk_off) { reply[3] = RK_OFF; return 4; }
     owner = get32(request + 3);
     number = get32(request + 7);
+    if (command == RK_PAD_NEXT) {
+        after = (unsigned)request[11] << 8 | request[12];
+        events = request + 14;
+    }
     sr = core_keys_lock();
-    if (!owner || !number || request[11] != n || !rp_valid(request + 12, n)) {
+    /* events[-1]: the event count, just before the events */
+    if (!owner || !number || events[-1] != n || !rp_valid(events, n) || after > RP_MAX_MS) {
         reply[3] = RK_INVALID;
     } else if (owner != session) {
         reply[3] = RK_STALE;
@@ -198,6 +207,13 @@ static int pad_receive(unsigned command, const unsigned char *packed, unsigned l
         if (action != RK_PAD) reply[3] = RK_INVALID;   /* a repeat: the latest report */
     } else if (closed || number < operation || operation == 0xffffffffu || number != operation + 1) {
         reply[3] = RK_STALE;
+    } else if (command == RK_PAD_NEXT) {
+        /* Stale once the script before it has played out: the host starts
+         * the next one with PAD RUN. */
+        queuing = cleanup || action != RK_PAD || state != RK_ACCEPTED
+                  ? RP_ENDED : rp_queue(events, n, after, rk_now());
+        if (queuing == RP_QUEUED) operation = number;
+        else reply[3] = queuing == RP_FULL ? RK_BUSY : RK_STALE;
     } else if (cleanup || state == RK_ACCEPTED || owned() || rp_state() != RP_IDLE) {
         reply[3] = RK_BUSY;
     } else {
@@ -205,7 +221,7 @@ static int pad_receive(unsigned command, const unsigned char *packed, unsigned l
         state = RK_ACCEPTED; reason = RK_OK; tapping = 0;
         started = rk_now();
         rp_take_result();
-        rp_start(request + 12, n, started);
+        rp_start(events, n, started);
     }
     if (reply[3] == RK_OK) result = report(reply);
     core_keys_unlock(sr);
@@ -222,7 +238,7 @@ int rk_receive(const unsigned char *packed, unsigned length, unsigned char *repl
     locate();
     command = packed[3] | ((packed[0] << 3) & 0x80);
 #ifdef RK_PADS
-    if (command >= RK_PAD_CAPS && command <= RK_PAD_RUN)
+    if (command >= RK_PAD_CAPS && command <= RK_PAD_NEXT)
         return pad_receive(command, packed, length, reply);
 #endif
     if (command < RK_CAPS || command > RK_CANCEL) return 0;

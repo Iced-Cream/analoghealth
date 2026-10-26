@@ -188,7 +188,9 @@ def decode_peek(p):
 
 
 class _RequestRefused(ValueError):
-    pass
+    def __init__(self, message, status=1):
+        super().__init__(message)
+        self.status = status
 
 
 class Diag:
@@ -223,7 +225,7 @@ class Diag:
         def answered(msgs):
             for m in msgs[len(found):]:
                 r = parse(m)
-                if (CAPS <= cmd <= CANCEL or pads.PAD_CAPS <= cmd <= pads.PAD_RUN) and bytes(m) != HEADER + pack7(unpack7(bytes(m)[6:-1])) + b'\xf7':
+                if (CAPS <= cmd <= CANCEL or pads.PAD_CAPS <= cmd <= pads.PAD_NEXT) and bytes(m) != HEADER + pack7(unpack7(bytes(m)[6:-1])) + b'\xf7':
                     r = None
                 found.append(r if r and r['seq'] == seq and r['cmd'] == cmd | 0x80 else None)
             return any(found)
@@ -232,7 +234,7 @@ class Diag:
             if r:
                 if r['status']:
                     raise _RequestRefused('the mod refused 0x%02x: %s'
-                                          % (cmd, STATUS.get(r['status'], r['status'])))
+                                          % (cmd, STATUS.get(r['status'], r['status'])), r['status'])
                 return r['payload']
         raise TimeoutError('no answer: is a firmware with analoghealth installed?')
 
@@ -368,6 +370,84 @@ class RemoteKeys:
         if report['state'] != 'completed':
             raise RuntimeError('pad script %s: %s' % (report['state'], report['reason']))
         return report
+
+    def _pad_op(self, builder, events, *after):
+        """One PAD RUN or PAD NEXT: 'ok', 'busy' (the queue is full or the player
+        still busy: ask again) or 'stale' (PAD NEXT: nothing is left playing to
+        follow)."""
+        self.operation += 1
+        try:
+            self._report(self.diag.call(builder, self.session, self.operation, *after, events,
+                                        timeout=0.25), self.operation)
+            return 'ok'
+        except _RequestRefused as e:
+            self.operation -= 1
+            if e.status == 3:
+                return 'busy'
+            if e.status == 4 and builder is pads.req_pad_next:
+                return 'stale'
+            raise
+        except TimeoutError:
+            if self.status(0)['operation'] == self.operation:
+                return 'ok'
+            self.operation -= 1
+            return 'busy'
+
+    def pad_chain(self, plan, between=None):
+        """Play [(start ms, script)] (analogpads.replay_plan) as a chain: the first
+        with PAD RUN, each next with PAD NEXT as soon as the firmware's queue has
+        room, timed there from the start of the one before it, so the host's own
+        latency never reaches the timing. When the chain has played out before the
+        next script arrives (a pause longer than the firmware queues ahead, or a
+        host that fell behind), that script starts a new chain with PAD RUN at its
+        own time by the host's clock. `between` runs while waiting (padplay's log
+        reader). -> (times the chain played out before its next script arrived,
+        the latest of the host-timed starts, in ms)."""
+        restarts, late, begin, prev = 0, 0.0, None, None
+
+        def pause(seconds=0.02):
+            # a full queue holds a few hundred ms: no need to ask more often
+            if between:
+                between()
+            time.sleep(seconds)
+        for start, s in plan:
+            pads.check(s)
+            while True:
+                if prev is not None and start - prev <= pads.MAX_MS:
+                    got = self._pad_op(pads.req_pad_next, s, start - prev)
+                    if got == 'stale':
+                        report = self.status()
+                        if report['state'] not in ('accepted', 'completed'):
+                            raise RuntimeError('pad script %s: %s' % (report['state'], report['reason']))
+                        if report['state'] == 'completed':
+                            prev = None
+                            restarts += 1
+                        got = 'busy'
+                else:
+                    if begin is not None:
+                        wait = begin + start / 1000 - time.monotonic()
+                        while wait > 0:
+                            pause(min(wait, 0.02))
+                            wait = begin + start / 1000 - time.monotonic()
+                        late = max(late, -wait * 1000)
+                    sent = time.monotonic()
+                    got = self._pad_op(pads.req_pad_run, s)
+                    if got == 'ok' and begin is None:
+                        begin = sent - start / 1000
+                if got == 'ok':
+                    break
+                pause()
+            prev = start
+        deadline = begin + (plan[-1][0] + plan[-1][1][-1][0]) / 1000 + 3
+        report = self.status()
+        while report['state'] == 'accepted':
+            if time.monotonic() >= deadline:
+                raise TimeoutError('pad scripts still running; not replayed')
+            pause()
+            report = self.status()
+        if report['state'] != 'completed':
+            raise RuntimeError('pad script %s: %s' % (report['state'], report['reason']))
+        return restarts, late
 
     def cancel(self):
         try:
@@ -664,7 +744,7 @@ def pad_caps(d):
     except _RequestRefused:
         raise ValueError('this firmware has no pad commands (an analoghealth before 1.3, '
                          'or not a Rytm)') from None
-    if caps['revision'] != 1 or caps['pads'] != len(pads.PADS):
+    if caps['revision'] not in (1, 2) or caps['pads'] != len(pads.PADS):
         raise ValueError('unsupported pad revision %d' % caps['revision'])
     return caps
 
@@ -777,34 +857,48 @@ def cmd_padplay(d, args):
         i = args.index('--log')
         out, args = args[i + 1], args[:i] + args[i + 2:]
     entries, _threshold = pads.load(args[0])
-    plan = pads.replay_plan(pads.messages(entries), which)
+    caps = pad_caps(d)
+    # A firmware with PAD NEXT (revision 2) queues the scripts and keeps their
+    # timing itself; before it, the host starts each one at its time.
+    chained = caps['queue'] > 0
+    plan = pads.replay_plan(pads.messages(entries), which, carry=chained)
     if not plan:
         raise ValueError('the log holds no pad messages')
     scripts = [s for _, s in plan]
-    caps = pad_caps(d)
-    got, at, late = [], 0, 0.0
+    got, at, late, dry = [], [0], 0.0, 0
     if out:
         d.call(pads.req_capture, 1)
+
+    def drain():
+        if out:
+            at[0] = _drain(d, at[0], got)
     try:
         with RemoteKeys(d) as keys:
-            begin = time.monotonic()
-            for start, s in plan:
-                # each script at its own place in the take, not straight after the last
-                wait = begin + start / 1000 - time.monotonic()
-                if wait > 0:
-                    time.sleep(wait)
-                else:
-                    late = max(late, -wait * 1000)
-                keys.pads(s)
-                if out:
-                    at = _drain(d, at, got)
+            if chained:
+                dry, late = keys.pad_chain(plan, between=drain)
+            else:
+                begin = time.monotonic()
+                for start, s in plan:
+                    # each script at its own place in the take, not straight after the last
+                    wait = begin + start / 1000 - time.monotonic()
+                    if wait > 0:
+                        time.sleep(wait)
+                    else:
+                        late = max(late, -wait * 1000)
+                    keys.pads(s)
+                    drain()
     finally:
         if out:
             d.call(pads.req_capture, 0)
-    print('played %d events in %d scripts; latest script start %.1f ms late'
-          % (sum(map(len, scripts)), len(scripts), late))
+    if chained:
+        print('played %d events in %d chained scripts; the queue ran dry %d times%s'
+              % (sum(map(len, scripts)), len(scripts), dry,
+                 ' (latest host-timed start %.1f ms late)' % late if late else ''))
+    else:
+        print('played %d events in %d scripts; latest script start %.1f ms late'
+              % (sum(map(len, scripts)), len(scripts), late))
     if out:
-        at = _drain(d, at, got)
+        drain()
         pads.save(out, got, caps['threshold'])
         want = [m for m in pads.messages(entries) if not m['ours'] and len(m['bytes']) == 2
                 and m['bytes'][0] >> 4 in (pads.PRESSURE, pads.STRIKE, pads.RELEASE, pads.KEY)

@@ -296,13 +296,17 @@ class Session:
         elif op == 'padplay':
             which = [w[5:].upper().split(',') for w in a[1:] if w.startswith('pads=')]
             entries, _ = analogpads.load(self.path(a[0]))
-            scripts = analogpads.replay_script(analogpads.messages(entries), which[0] if which else None)
-            if not scripts:
+            chained = pad_caps(self.diag)['queue'] > 0       # PAD NEXT: the take's own timing
+            plan = analogpads.replay_plan(analogpads.messages(entries), which[0] if which else None,
+                                          carry=chained)
+            if not plan:
                 raise ValueError('%s holds no pad messages' % a[0])
-            pad_caps(self.diag)
-            for script in scripts:
-                self.keys.pads(script)
-            say('  played %d pad events' % sum(map(len, scripts)))
+            if chained:
+                self.keys.pad_chain(plan)
+            else:
+                for _, script in plan:
+                    self.keys.pads(script)
+            say('  played %d pad events' % sum(len(s) for _, s in plan))
         elif op == 'shot':
             s = self.shot(a[0])
             say('  %s: %dx%d, %d lit' % (a[0], s.w, s.h, s.lit()))

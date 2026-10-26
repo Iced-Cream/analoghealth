@@ -43,9 +43,14 @@ const unsigned *fw_key_table = host_table;
 /* The panel receiver, as a recorder: what a script fed it. */
 volatile unsigned char rp_in_panel, fw_panel_idle = 1;
 volatile unsigned fw_pad_threshold;
-static unsigned char fed[4096];
-static unsigned fed_count;
-void rp_stock_parser(unsigned byte) { assert(depth || rp_in_panel); fed[fed_count++] = byte; }
+static unsigned char fed[8192];
+static unsigned fed_at[8192], fed_count;
+void rp_stock_parser(unsigned byte)
+{
+    assert(depth || rp_in_panel);
+    fed_at[fed_count] = clock_ticks;
+    fed[fed_count++] = byte;
+}
 #include "../../remote_pads.c"
 #endif
 
@@ -73,7 +78,8 @@ void host_reset(void)
     held_key = held_start = held_ticks = tap_start = 0;
     started = tapping = cleanup = closed = 0;
 #ifdef RK_PADS
-    pad_events = pad_next = pad_start = pad_state = pad_result = pad_failed = 0;
+    memset(script_events, 0, sizeof(script_events));
+    head = queued = pad_next = pad_state = pad_result = pad_failed = 0;
     struck = keyed = bridged = logged = capturing = fed_count = 0;
     rp_in_panel = 0;
     fw_panel_idle = 1;
@@ -85,8 +91,8 @@ void host_advance(unsigned ms)
 #ifdef RK_PADS
     unsigned i;
     for (i = 0; i < ms; ++i) {          /* the audio render, about once a ms */
-        clock_ticks += TICKS_PER_MS;
         rp_render();
+        clock_ticks += TICKS_PER_MS;
     }
 #else
     clock_ticks += ms * TICKS_PER_MS;
@@ -94,6 +100,7 @@ void host_advance(unsigned ms)
     rk_tick(0);
 }
 void host_clock(unsigned ticks) { clock_ticks = ticks; }
+unsigned host_now(void) { return clock_ticks; }
 void host_busy(unsigned busy) { fw_ui_queue[1] = busy ? 17 : 0; }
 unsigned host_calls(void) { return calls; }
 void host_physical_group(unsigned group, unsigned mask) { core_panel_buttons(group, mask); }
@@ -110,6 +117,7 @@ unsigned host_turn_calls(void) { return turn_calls; }
 #ifdef RK_PADS
 unsigned host_fed_count(void) { return fed_count; }
 unsigned host_fed(unsigned i) { return fed[i]; }
+unsigned host_fed_at(unsigned i) { return fed_at[i]; }
 void host_in_panel(unsigned busy) { rp_in_panel = busy; }
 void host_idle(unsigned idle) { fw_panel_idle = idle; }
 void host_threshold(unsigned t) { fw_pad_threshold = t; }

@@ -175,6 +175,139 @@ class Pads(unittest.TestCase):
                 keys.pads(s)
         self.assertEqual(self.fed(), [0xA0, 70, 0x90, 50, 0xB0, 0])
 
+    # PAD NEXT (revision 2): scripts queued behind the one playing.
+
+    def fed_ms(self):
+        """[(ms from the first byte, byte)] of what reached the receiver."""
+        at = [self.lib.host_fed_at(i) for i in range(self.lib.host_fed_count())]
+        return [((t - at[0]) // pads.TICKS_PER_MS, b) for t, b in zip(at, self.fed())]
+
+    def sim_time(self):
+        """The host's clock and sleep on the fixture's clock, so a chain's waits
+        pass in the firmware too."""
+        lib = self.lib
+
+        def sleep(seconds):
+            lib.host_advance(max(1, round(seconds * 1000)))
+        return patch.object(usb, 'time', types.SimpleNamespace(
+            monotonic=lambda: lib.host_now() / (pads.TICKS_PER_MS * 1000.0), sleep=sleep))
+
+    def run_op(self, keys, builder, events, *after):
+        keys.operation += 1
+        try:
+            return self.diag.call(builder, keys.session, keys.operation, *after, events, timeout=0.25)
+        except usb._RequestRefused:
+            keys.operation -= 1
+            raise
+
+    def test_caps_queue(self):
+        caps = usb.pad_caps(self.diag)
+        self.assertEqual((caps['revision'], caps['queue']), (2, 3))
+
+    def test_queue_keeps_the_timing(self):
+        # each request costs the fixture 50 ms; the queue keeps the take's times anyway
+        plan = [(0, [(0, 0xA0, 60), (200, 0xB0, 0)]), (220, [(0, 0xA1, 61), (5, 0xB1, 0)]),
+                (230, [(0, 0xA2, 62), (3, 0xB2, 0)]), (300, [(0, 0xA3, 63), (100, 0xB3, 0)])]
+        with self.sim_time(), usb.RemoteKeys(self.diag) as keys:
+            self.assertEqual(keys.pad_chain(plan), (0, 0.0))
+        self.assertEqual(self.fed_ms(), [(0, 0xA0), (0, 60), (200, 0xB0), (200, 0), (220, 0xA1), (220, 61),
+                                         (225, 0xB1), (225, 0), (230, 0xA2), (230, 62), (233, 0xB2),
+                                         (233, 0), (300, 0xA3), (300, 63), (400, 0xB3), (400, 0)])
+
+    def test_queue_carries_held_pads_across_the_join(self):
+        keys = usb.RemoteKeys(self.diag)
+        self.run_op(keys, pads.req_pad_run, [(0, 0x00, 1), (0, 0xA0, 90), (100, 0x90, 40)])
+        self.run_op(keys, pads.req_pad_next, [(0, 0x90, 30), (20, 0xB0, 0), (20, 0x00, 0)], 150)
+        self.lib.host_advance(30)
+        self.assertNotEqual(self.bd_group(), 0)       # past the first script's end: still down
+        self.lib.host_advance(200)
+        self.assertEqual(self.fed_ms(), [(0, 0xA0), (0, 90), (100, 0x90), (100, 40), (150, 0x90),
+                                         (150, 30), (170, 0xB0), (170, 0)])
+        self.assertEqual(self.bd_group(), 0)
+        self.assertEqual(keys.status()['state'], 'completed')
+        keys.cancel()
+
+    def test_queue_full_and_too_far_ahead(self):
+        keys = usb.RemoteKeys(self.diag)
+        self.run_op(keys, pads.req_pad_run, [(0, 0xA0, 60), (1000, 0xB0, 0)])
+        for _ in range(3):
+            self.run_op(keys, pads.req_pad_next, [(0, 0xA1, 60), (5, 0xB1, 0)], 100)
+        with self.assertRaises(usb._RequestRefused) as e:
+            self.run_op(keys, pads.req_pad_next, [(0, 0xA1, 60)], 100)
+        self.assertEqual(e.exception.status, 3)        # busy: the ring is full
+        keys.cancel()
+        keys = usb.RemoteKeys(self.diag)
+        self.run_op(keys, pads.req_pad_run, [(0, 0xA0, 60), (2000, 0xB0, 0)])
+        self.run_op(keys, pads.req_pad_next, [(0, 0xA1, 60)], 9000)
+        with self.assertRaises(usb._RequestRefused) as e:   # 9 + 9 s from now: busy, for now
+            self.run_op(keys, pads.req_pad_next, [(0, 0xA1, 60)], 9000)
+        self.assertEqual(e.exception.status, 3)
+        with self.assertRaises(usb._RequestRefused):         # over RP_MAX_MS: refused
+            self.run_op(keys, pads.req_pad_next, [(0, 0xA1, 60)], 10001)
+        keys.cancel()
+
+    def test_next_after_the_chain_has_ended(self):
+        keys = usb.RemoteKeys(self.diag)
+        with self.assertRaises(usb._RequestRefused) as e:     # nothing has played
+            self.run_op(keys, pads.req_pad_next, [(0, 0xA1, 60)], 0)
+        self.assertEqual(e.exception.status, 4)
+        keys.pads([(0, 0xA0, 60)])
+        with self.assertRaises(usb._RequestRefused) as e:
+            self.run_op(keys, pads.req_pad_next, [(0, 0xA1, 60)], 0)
+        self.assertEqual(e.exception.status, 4)
+        self.assertEqual(self.fed(), [0xA0, 60, 0xB0, 0])
+        keys.cancel()
+
+    def test_chain_restarts_when_it_ran_dry(self):
+        # a second script more than the queue reaches ahead (10 s) is started by the host
+        plan = [(0, [(0, 0xA0, 60)]), (10500, [(0, 0xA1, 61), (50, 0xB1, 0)]), (10600, [(0, 0xA2, 62)])]
+        with self.sim_time(), usb.RemoteKeys(self.diag) as keys:
+            dry, late = keys.pad_chain(plan)
+        self.assertEqual(dry, 0)
+        self.assertEqual([b for _, b in self.fed_ms()], [0xA0, 60, 0xB0, 0, 0xA1, 61, 0xB1, 0, 0xA2, 62, 0xB2, 0])
+        ms = dict((b, t) for t, b in self.fed_ms() if b in (0xA1, 0xA2))
+        self.assertEqual(ms[0xA2] - ms[0xA1], 100)
+        self.assertLess(abs(ms[0xA1] - 10500), 10)              # by the host's clock
+
+    def test_chain_restarts_when_the_queue_ran_dry(self):
+        # the first script has played out before its successor arrives (50 ms a request here)
+        plan = [(0, [(0, 0xA0, 60)]), (20, [(0, 0xA1, 61)])]
+        with self.sim_time(), usb.RemoteKeys(self.diag) as keys:
+            dry, late = keys.pad_chain(plan)
+        self.assertEqual(dry, 1)
+        self.assertGreater(late, 20)
+        self.assertEqual(self.fed(), [0xA0, 60, 0xB0, 0, 0xA1, 61, 0xB1, 0])
+
+    def test_cancel_drops_the_queue(self):
+        keys = usb.RemoteKeys(self.diag)
+        self.run_op(keys, pads.req_pad_run, [(0, 0xA0, 60), (0, 0xC0, 1), (400, 0xB0, 0)])
+        self.run_op(keys, pads.req_pad_next, [(0, 0xA1, 61)], 500)
+        self.lib.host_advance(20)
+        keys.cancel()
+        self.lib.host_advance(600)
+        self.assertEqual(self.fed(), [0xA0, 60, 0xC0, 1, 0xB0, 0, 0xC0, 0])
+        self.assertEqual(self.lib.host_pad_state(), 0)
+
+    def test_replay_carries_a_long_press_whole(self):
+        t = pads.TICKS_PER_MS
+        entries = [(0, 0xA0, 2), (1, 90, 0)]
+        for i in range(1, 121):                                   # pressure every 1.5 ms
+            entries += [(i * 3 * t // 2, 0x90, 2), (i * 3 * t // 2 + 1, i, 0)]
+        entries += [(200 * t, 0xB0, 2), (200 * t + 1, 0, 0)]
+        msgs = pads.messages(entries)
+        thinned = pads.replay_plan(msgs)
+        self.assertEqual(len(thinned), 1)
+        self.assertEqual(len(thinned[0][1]), pads.MAX_EVENTS)
+        plan = pads.replay_plan(msgs, carry=True)
+        self.assertEqual([len(s) for _, s in plan], [48, 48, 26])
+        flat = [(start + ms, h, d) for start, s in plan for ms, h, d in s]
+        self.assertEqual(flat, [(e[0] // t, e[1], m) for e, m in
+                                zip(entries[::2], [b for _, b, _ in entries[1::2]])])
+        with self.sim_time(), usb.RemoteKeys(self.diag) as keys:
+            self.assertEqual(keys.pad_chain(plan)[0], 0)
+        self.assertEqual([(t_, b) for t_, b in self.fed_ms()][::2],
+                         [(ms, h) for ms, h, _ in flat])
+
 
 class Curve(unittest.TestCase):
     def test_velocity(self):

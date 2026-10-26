@@ -17,8 +17,11 @@ extern void core_keys_unlock(unsigned sr);
 
 enum { PAD_TICKS_PER_MS = 132000, PAD_GRACE_MS = 2000 };
 
-static unsigned char script[RP_MAX_EVENTS * 4];
-static unsigned pad_events, pad_next, pad_start, pad_state, pad_result, pad_failed;
+/* A ring of scripts: head is the one playing, queued counts it and those
+ * waiting behind it. Each has its start time on the bus clock. */
+static unsigned char script[RP_QUEUE][RP_MAX_EVENTS * 4];
+static unsigned script_events[RP_QUEUE], script_start[RP_QUEUE], head, queued;
+static unsigned pad_next, pad_state, pad_result, pad_failed;
 static unsigned struck, keyed, bridged;        /* pads down, one bit each */
 
 static unsigned log_time[RP_LOG];
@@ -106,20 +109,46 @@ int rp_valid(const unsigned char *e, unsigned count)
     return 1;
 }
 
-unsigned rp_last_ms(void)
+static unsigned last_ms(unsigned slot)
 {
-    return pad_events ? (unsigned)script[4 * pad_events - 4] << 8 | script[4 * pad_events - 3] : 0;
+    unsigned n = script_events[slot];
+    return n ? (unsigned)script[slot][4 * n - 4] << 8 | script[slot][4 * n - 3] : 0;
+}
+
+static void put(unsigned slot, const unsigned char *e, unsigned count, unsigned start)
+{
+    unsigned i;
+    for (i = 0; i < count * 4; ++i)
+        script[slot][i] = e[i];
+    script_events[slot] = count;
+    script_start[slot] = start;
 }
 
 void rp_start(const unsigned char *e, unsigned count, unsigned now)
 {
-    unsigned i;
-    for (i = 0; i < count * 4; ++i)
-        script[i] = e[i];
-    pad_events = count;
+    head = 0;
+    queued = 1;
+    put(0, e, count, now);
     pad_next = pad_result = pad_failed = 0;
-    pad_start = now;
     pad_state = RP_RUNNING;
+}
+
+/* PAD NEXT: a script that starts after_ms after the start of the last one
+ * held, so a chain keeps the take's timing whenever the host sends it. Full
+ * while the ring is, or while the script would start more than RP_MAX_MS
+ * from now (start times stay well within the clock's signed range); ended
+ * once the last script has played out and let go. */
+int rp_queue(const unsigned char *e, unsigned count, unsigned after_ms, unsigned now)
+{
+    unsigned last = (head + queued - 1) & (RP_QUEUE - 1);
+    if (pad_state != RP_RUNNING || pad_failed)
+        return RP_ENDED;
+    if (queued == RP_QUEUE ||
+        (int)(script_start[last] - now) > (int)((RP_MAX_MS - after_ms) * PAD_TICKS_PER_MS))
+        return RP_FULL;
+    put((head + queued) & (RP_QUEUE - 1), e, count, script_start[last] + after_ms * PAD_TICKS_PER_MS);
+    ++queued;
+    return RP_QUEUED;
 }
 
 void rp_abort(void)
@@ -128,6 +157,7 @@ void rp_abort(void)
         pad_failed = 1;
         pad_state = RP_RELEASING;
     }
+    queued = 1;
 }
 
 unsigned rp_state(void)
@@ -199,20 +229,30 @@ static void release_all(void)
 static void service(unsigned now)
 {
     const unsigned char *e;
-    unsigned elapsed = now - pad_start;
-    if (pad_state == RP_RUNNING) {
-        if (elapsed >= (rp_last_ms() + PAD_GRACE_MS) * PAD_TICKS_PER_MS) {
+    int elapsed;
+    while (pad_state == RP_RUNNING) {
+        elapsed = (int)(now - script_start[head]);
+        if (elapsed < 0)
+            return;                         /* a queued script, not due yet */
+        if (elapsed >= (int)((last_ms(head) + PAD_GRACE_MS) * PAD_TICKS_PER_MS)) {
             pad_failed = 1;                 /* the receiver stayed busy */
             pad_state = RP_RELEASING;
+            break;
         }
-        while (pad_state == RP_RUNNING && pad_next < pad_events) {
-            e = script + 4 * pad_next;
-            if (elapsed < ((unsigned)e[0] << 8 | e[1]) * PAD_TICKS_PER_MS || !play(e[2], e[3]))
+        while (pad_next < script_events[head]) {
+            e = script[head] + 4 * pad_next;
+            if (elapsed < (int)(((unsigned)e[0] << 8 | e[1]) * PAD_TICKS_PER_MS) || !play(e[2], e[3]))
                 return;
             ++pad_next;
         }
-        if (pad_failed || pad_next == pad_events)
+        if (pad_failed || queued == 1) {
             pad_state = RP_RELEASING;
+            break;
+        }
+        /* The next script carries on: the pads stay down across the join. */
+        head = (head + 1) & (RP_QUEUE - 1);
+        --queued;
+        pad_next = 0;
     }
     if (pad_state == RP_RELEASING)
         release_all();
