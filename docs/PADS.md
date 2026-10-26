@@ -118,3 +118,9 @@ replay fed the OS and compares it with the original, message by message.
   between scripts; in a dense passage scripts run back to back, each waiting
   for the last to be reported done over USB, and the replay fell up to 575 ms
   behind before catching up at the next gap.
+- PAD NEXT (revision 2), host tests: chain timing, pads held across a join,
+  a full queue, a chain that has ended, cancel dropping the queue, a long
+  press cut whole. In analog-emu and then on the Rytm MKII (2026-10-26,
+  build AH14), `padplay --log` of the same 30 s take as one chain of 86
+  scripts: all 3192 messages byte for byte, every one within 1 ms of the
+  take (strikes within 0.9 ms), the queue never ran dry.
