@@ -61,13 +61,23 @@ exact decoded length, refusing truncated, oversized and noncanonical input.
   nothing comes from the OS's input handling, not from the remote path.
   How many counts a change takes depends on what is turned:
   - On a parameter page, a few counts move a value.
-  - A list menu needs many more. Measured in the emulator on the Rytm 1.74
-    LFO DESTINATION list: about 42-56 counts before the cursor leaves the
-    first entry, then about 24-32 counts per entry (fewer when the counts come
-    quickly). Small turns a second apart may never add up to a step.
+  - A list menu needs many more. On a Rytm MKII with OS 1.74, LFO
+    DESTINATION list, with the counts sent 8 per UI tick (`turn D N 8`):
+    - from a freshly opened list, 8 and 16 counts move nothing; 32 reach the
+      2nd entry and 64 the 3rd;
+    - in one session, 64, 96, 128 and 160 counts reach the 3rd, 5th, 6th and
+      7th entry, so about 16-32 counts per entry once the cursor moves.
+    - The emulator gives the same entries, except that 16 counts already move
+      it there.
+  - Sent slowly, 1 count per tick, the emulator needs about 42-56 counts for
+    the first entry and 24-32 per entry after it. Small turns a second apart
+    may never add up to a step.
   - A turn back by the same counts can land somewhere else.
-  These figures are emulator measurements. How many raw counts one hand
-  detent sends has not been measured on hardware yet.
+  On the panel, a hand turn arrives as one message per count, always +1 or
+  -1. Turning faster sends the messages closer together (down to about 1-2
+  ms apart), not bigger steps. A deliberate single twist of encoder D sent
+  22-29 counts. So a hand turn and a remote TURN of the same counts look the
+  same to the OS, apart from their timing.
 
 Sessions must be nonzero. One operation can be pending. Revision 5 allows up
 to four persistent holds at once (revision 4: one), each with its own lease,
