@@ -32,7 +32,9 @@ Steps (one per line or separated by ';'; '#' starts a comment):
                           key revision 5 holds up to 4 keys at once, each with its own MS
     release KEY
     keys SEQ              as analogusb.py keys: 'GLOBAL,DOWN,FUNC(YES)'; with key revision 5,
-                          several holds: 'T5+FUNC(RECORD)' (pressed in order, let go in reverse)
+                          several holds: 'T5+FUNC(RECORD)' (pressed in order, let go in reverse);
+                          a hold a pad follows waits 0.3 s first (PERF/SCNE + pad: a pad
+                          sooner is a plain press; after `hold PERF` steps, wait 0.3 too)
     turn ENC DELTA [STEP] encoder turn, if the analoghealth build has them: DELTA raw
                           encoder counts, STEP of them per UI tick (20 a second); a
                           list menu needs many (docs/REMOTE-KEYS.md, TURN)

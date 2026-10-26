@@ -54,6 +54,14 @@ exact decoded length, refusing truncated, oversized and noncanonical input.
   A longer turn is several TURN actions. Key IDs are those of `keys-ar2.def` or `keys-a4.def` (see [the button
   names](BUTTONS.md)). The stock driver makes the UI events; no gesture or
   menu policy is encoded.
+- **PERF or SCNE before a pad needs a moment.** The Rytm takes a pad pressed
+  within about 0.15 s of PERF or SCNE as a plain pad press, not as PERF/SCNE +
+  pad. A knob turned then edits the sound's own value instead of the
+  performance's depth or the scene's lock. This was measured in the emulator,
+  with panel and remote keys alike: 0.15 s was not taken, 0.2 s was.
+  `keys PERF+SD(...)` and `keys SCNE(BD)` wait 0.3 s after such a hold. A plan
+  that uses separate `hold` steps waits at least 0.3 s after `hold PERF` or
+  `hold SCNE` before it holds or taps the pad.
 - **TURN sends raw encoder counts**, the same counts the panel's encoders
   send, not value steps or list entries. The OS applies its own dead zone and
   acceleration. In the emulator, remote turns and panel turns moved the same

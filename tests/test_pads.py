@@ -245,6 +245,23 @@ class Pads(unittest.TestCase):
             self.assertEqual(self.fed(), [0xAB, pads_force(), 0xBB, 0])
             self.assertEqual(self.lib.host_group(self.lib.host_key_group(usb.KEYSETS[RYTM]['CB'])), 0)
 
+    def test_hold_settles_before_a_pad(self):
+        calls = []
+        keys = types.SimpleNamespace(max_held=4, press=lambda k, ms: calls.append(('press', k)),
+                                     tap=lambda k, ms: calls.append(('tap', k)),
+                                     release=lambda k: calls.append(('release', k)))
+        sleep = lambda s: calls.append(('sleep', s))
+        usb.play_sequence(keys, usb.key_sequence('PERF+SD(LFO)'), sleep=sleep)
+        usb.play_sequence(keys, usb.key_sequence('SCNE(BD)'), sleep=sleep)
+        usb.play_sequence(keys, usb.key_sequence('FUNC(DOWN),5+FUNC(RECORD)'), sleep=sleep)
+        s = ('sleep', usb.PAD_SETTLE_S)
+        self.assertEqual(calls, [('press', 'PERF'), s, ('press', 'SD'), ('tap', 'LFO'),
+                                 ('release', 'SD'), ('release', 'PERF'),
+                                 ('press', 'SCNE'), s, ('tap', 'BD'), ('release', 'SCNE'),
+                                 ('press', 'FUNC'), ('tap', 'DOWN'), ('release', 'FUNC'),
+                                 ('press', '5'), ('press', 'FUNC'), ('tap', 'RECORD'),
+                                 ('release', 'FUNC'), ('release', '5')])
+
     # Shots while a pad is down (pad step's shots=FILE@MS).
 
     def test_between_runs_while_the_pad_is_down(self):

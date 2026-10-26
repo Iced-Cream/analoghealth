@@ -492,15 +492,27 @@ def key_sequence(text):
     return steps
 
 
-def play_sequence(keys, steps, tap_ms=None, hold_ms=None):
-    """Run key_sequence steps: each one's holds in order, its tap, the holds let go in reverse."""
+PAD_KEYS = ('BD', 'SD', 'RS', 'CP', 'BT', 'LT', 'MT', 'HT', 'CH', 'OH', 'CY', 'CB')
+# The Rytm takes a pad pressed within about 0.15 s of PERF or SCNE as a plain pad press, not
+# as PERF/SCNE + pad (measured in the emulator, panel and remote keys alike: 0.15 s refused,
+# 0.2 s taken), so a knob turned then edits the sound, not the performance or scene. A hold
+# followed by a pad waits this long first.
+PAD_SETTLE_S = 0.3
+
+
+def play_sequence(keys, steps, tap_ms=None, hold_ms=None, sleep=time.sleep):
+    """Run key_sequence steps: each one's holds in order, its tap, the holds let go in reverse.
+    A hold that a pad follows (the next hold or the tap) settles PAD_SETTLE_S first."""
     for holds, tap in steps:
         most = getattr(keys, 'max_held', 1)
         if len(holds) > most:
             raise ValueError('this firmware holds %d key(s) at once (key revision %s); %s needs %d'
                              % (most, getattr(keys, 'revision', '?'), '+'.join(holds), len(holds)))
-        for h in holds:
+        nxt = list(holds[1:]) + [tap]
+        for h, after in zip(holds, nxt):
             keys.press(h, hold_ms)
+            if after in PAD_KEYS and h not in PAD_KEYS:
+                sleep(PAD_SETTLE_S)
         keys.tap(tap, tap_ms)
         for h in reversed(holds):
             keys.release(h)
