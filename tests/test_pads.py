@@ -17,6 +17,10 @@ import analogpads as pads
 from keymap import RYTM
 
 
+def pads_force():
+    return 100                                  # RP_KEY_FORCE, as the emulator's panel strikes
+
+
 class Pads(unittest.TestCase):
     setUpClass = classmethod(tk.Keys.setUpClass.__func__)
     PRODUCT = RYTM
@@ -98,7 +102,8 @@ class Pads(unittest.TestCase):
                 keys.pads([(0, 0xA0, 60)])
             keys.release('BD')
             keys.pads([(0, 0xA0, 60)])
-            self.assertEqual(self.fed(), [0xA0, 60, 0xB0, 0])
+            # the key hold's own strike and release, then the script's
+            self.assertEqual(self.fed(), [0xA0, pads_force(), 0xB0, 0, 0xA0, 60, 0xB0, 0])
 
     def test_script_with_held_keys(self):
         # SCNE + a pad: the script plays while another key is held, and leaves it held
@@ -209,6 +214,36 @@ class Pads(unittest.TestCase):
         except usb._RequestRefused:
             keys.operation -= 1
             raise
+
+    # A pad key held or tapped: its strike and release go with the key bit, as the
+    # panel's do (the OS takes a pad as held, for PERF/SCNE + pad edits, from them).
+
+    def test_held_pad_key_strikes_and_releases(self):
+        with usb.RemoteKeys(self.diag) as keys:
+            keys.press('SD', 500)
+            self.assertEqual(self.fed(), [0xA1, pads_force()])
+            self.assertTrue(self.lib.host_group(self.lib.host_key_group(usb.KEYSETS[RYTM]['SD'])))
+            keys.release('SD')
+            self.assertEqual(self.fed(), [0xA1, pads_force(), 0xB1, 0])
+
+    def test_tapped_pad_key(self):
+        with usb.RemoteKeys(self.diag) as keys:
+            keys.tap('BD', 30)
+        self.assertEqual(self.fed(), [0xA0, pads_force(), 0xB0, 0])
+
+    def test_other_keys_send_no_pad_messages(self):
+        with usb.RemoteKeys(self.diag) as keys:
+            keys.press('PERF', 500)
+            keys.release('PERF')
+        self.assertEqual(self.fed(), [])
+
+    def test_expiry_releases_a_struck_pad(self):
+        with self.sim_time():
+            keys = usb.RemoteKeys(self.diag)
+            keys.press('CB', 100)
+            self.lib.host_advance(400)          # the lease runs out: the cleanup lets go
+            self.assertEqual(self.fed(), [0xAB, pads_force(), 0xBB, 0])
+            self.assertEqual(self.lib.host_group(self.lib.host_key_group(usb.KEYSETS[RYTM]['CB'])), 0)
 
     # Shots while a pad is down (pad step's shots=FILE@MS).
 

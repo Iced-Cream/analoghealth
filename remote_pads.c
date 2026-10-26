@@ -211,6 +211,27 @@ static int play(unsigned header, unsigned data)
     return 1;
 }
 
+/* A pad pressed as a key: a panel press is a strike (with the force the panel
+ * measures) as well as the key bit, and the OS takes a pad as held, for PERF or
+ * SCNE + pad edits, from the strike. Interrupts are masked. */
+static unsigned key_struck;
+
+int rp_key_strike(unsigned pad, unsigned down)
+{
+    unsigned bit = 1u << pad;
+    if (pad >= RP_PADS || !(key_struck & bit) != !!down)
+        return 1;                               /* already so */
+    if (!ready()) return 0;
+    send(down ? 0xa0 | pad : 0xb0 | pad, down ? RP_KEY_FORCE : 0);
+    key_struck = down ? key_struck | bit : key_struck & ~bit;
+    return 1;
+}
+
+unsigned rp_key_struck(void)
+{
+    return key_struck;
+}
+
 /* Let go of every pad the script left down: release, key up, bridge bit. */
 static void release_all(void)
 {

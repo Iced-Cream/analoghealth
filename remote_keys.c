@@ -389,6 +389,14 @@ void rk_tick(void *ctrl)
     }
 #endif
     if (cleanup) {
+#ifdef RK_PADS
+        /* Pads struck by a key hold are released first, as the panel would. */
+        for (i = 0; i < RP_PADS; ++i)
+            if ((rp_key_struck() >> i & 1) && !rp_key_strike(i, 0)) {
+                core_keys_unlock(sr);
+                return;
+            }
+#endif
         for (group = 0; group < CORE_KEYS_GROUPS; ++group) {
             if (core_keys_set(group, 0) != CORE_KEYS_OK) break;
             masks[group] = 0;
@@ -417,6 +425,14 @@ void rk_tick(void *ctrl)
         group = keymap[key].group;
         target = action == RK_RELEASE || tapping ? masks[group] & ~keymap[key].mask
                                                 : masks[group] | keymap[key].mask;
+#ifdef RK_PADS
+        /* A pad key goes with the pad's strike or release, ahead of its bit. */
+        if (codes[key] >= 0x90 && codes[key] <= 0x9b &&
+            !rp_key_strike(codes[key] - 0x90, !(action == RK_RELEASE || tapping))) {
+            core_keys_unlock(sr);
+            return;                                 /* the receiver is busy */
+        }
+#endif
         result = core_keys_set(group, target);
         if (result == CORE_KEYS_OK) {
             masks[group] = target;

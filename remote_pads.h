@@ -21,6 +21,11 @@ void rp_start(const unsigned char *events, unsigned count, unsigned now);
 int rp_queue(const unsigned char *events, unsigned count, unsigned after_ms, unsigned now);
 void rp_abort(void);
 void rp_flush(void);
+/* A pad held as a key (PRESS, RELEASE or TAP of BD..CB): the strike or release the
+ * panel sends with the key bit. 1 sent (or already so), 0 wait (receiver busy). */
+enum { RP_KEY_FORCE = 100 };
+int rp_key_strike(unsigned pad, unsigned down);
+unsigned rp_key_struck(void);
 unsigned rp_state(void);
 int rp_take_result(void);           /* 0 running or idle, 1 done, 2 failed */
 unsigned rp_threshold(void);
