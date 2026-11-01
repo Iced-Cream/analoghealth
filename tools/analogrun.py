@@ -50,7 +50,9 @@ Steps (one per line or separated by ';'; '#' starts a comment):
     expect-screen NAME [S]  stop unless the screen equals NAME.bin (in the plan's refs
                           folder), retrying for S seconds; a mismatch reports the differing
                           rows and columns and saves NAME-got.png and NAME-diff.png;
-                          rows=A-B (anywhere after NAME) compares rows A..B only;
+                          rows=A-B (anywhere after NAME) compares rows A..B only,
+                          cols=A-B columns A..B only (a dialog whose box width follows
+                          a name, say);
                           settle: a match must still hold 0.4 s later
     cc CH NUM VAL         MIDI channel 1-16
     nrpn CH MSB LSB VAL   VAL 0-16383 (CC 99, 98, 6, 38)
@@ -168,18 +170,20 @@ def say(*args, **kw):
     print(*args, file=OUT or sys.stdout, **kw)
 
 
-def screen_diff(got, want, w=128, h=64, rows=None):
+def screen_diff(got, want, w=128, h=64, rows=None, cols=None):
     """Two framebuffers -> (differing pixels as (y, x), a short text report); `rows`
-    (first, last) compares only those rows."""
+    (first, last) compares only those rows, `cols` (first, last) only those columns."""
     g, r = elkrpc.Screen(w, h, got).rows(), elkrpc.Screen(w, h, want).rows()
     first, last = rows or (0, h - 1)
-    diff = [(y, x) for y in range(first, last + 1) for x in range(w) if g[y][x] != r[y][x]]
+    left, right = cols or (0, w - 1)
+    diff = [(y, x) for y in range(first, last + 1) for x in range(left, right + 1) if g[y][x] != r[y][x]]
     if not diff:
         return diff, 'identical'
     ys, xs = [d[0] for d in diff], [d[1] for d in diff]
     y0, y1, x0, x1 = min(ys), max(ys), min(xs), max(xs)
+    within = (['rows %d-%d' % rows] if rows else []) + (['columns %d-%d' % cols] if cols else [])
     text = '%d pixels differ in rows %d-%d, columns %d-%d%s' % (
-        len(diff), y0, y1, x0, x1, ' (comparing rows %d-%d)' % rows if rows else '')
+        len(diff), y0, y1, x0, x1, ' (comparing %s)' % ', '.join(within) if within else '')
     if y1 - y0 < 12 and x1 - x0 < 64:          # small enough to show: + lit only now, - only before
         art = []
         for y in range(y0, y1 + 1):
@@ -350,23 +354,26 @@ class Session:
             s = self.shot(a[0])
             say('  %s: %dx%d, %d lit' % (a[0], s.w, s.h, s.lit()))
         elif op == 'expect-screen':
-            # expect-screen NAME[.bin] [WAIT_S] [rows=A-B]: compare with the reference (refs
+            # expect-screen NAME[.bin] [WAIT_S] [rows=A-B] [cols=A-B]: compare with the reference (refs
             # folder if set), retrying for up to WAIT_S while the screen settles; rows=A-B
             # compares only rows A..B (a test build's own drawing elsewhere, say, that
-            # depends on timing), and the failure report and diff picture cover only those.
+            # depends on timing), and the failure report and diff picture cover only those;
+            # cols=A-B likewise compares only columns A..B (127 at most).
             # `settle` (testplan adds it when it folds a wait into the check): a match counts
             # only when the screen still matches 0.4 s later.
             settle = 'settle' in a[1:]
             a = [w for w in a if w != 'settle']
-            opts = [w for w in a[1:] if w.startswith('rows=')]
-            a = a[:1] + [w for w in a[1:] if not w.startswith('rows=')]
-            span = None
-            if opts:
-                try:
-                    span = tuple(int(v) for v in opts[0][5:].split('-'))
-                    assert len(span) == 2 and 0 <= span[0] <= span[1] <= 63
-                except (ValueError, AssertionError):
-                    raise ValueError('rows=A-B with 0 <= A <= B <= 63, not %r' % opts[0])
+            opts = {k: [w for w in a[1:] if w.startswith(k + '=')] for k in ('rows', 'cols')}
+            a = a[:1] + [w for w in a[1:] if not w.startswith(('rows=', 'cols='))]
+            limits = {}
+            for k, top in (('rows', 63), ('cols', 127)):
+                if opts[k]:
+                    try:
+                        limits[k] = tuple(int(v) for v in opts[k][0][5:].split('-'))
+                        assert len(limits[k]) == 2 and 0 <= limits[k][0] <= limits[k][1] <= top
+                    except (ValueError, AssertionError):
+                        raise ValueError('%s=A-B with 0 <= A <= B <= %d, not %r' % (k, top, opts[k][0]))
+            span, cspan = limits.get('rows'), limits.get('cols')
             ref = a[0] if a[0].endswith('.bin') else a[0] + '.bin'
             refpath = os.path.join(self.refs, ref) if self.refs and not os.path.isabs(ref) else self.path(ref)
             got = self.rpc.screenshot()
@@ -383,8 +390,8 @@ class Session:
             end = time.monotonic() + (float(a[1]) if len(a) > 1 else 0)
 
             def same(g):
-                return g.pixels == want if span is None else not screen_diff(
-                    g.pixels, want, g.w, g.h, span)[0]
+                return g.pixels == want if span is None and cspan is None else not screen_diff(
+                    g.pixels, want, g.w, g.h, span, cspan)[0]
             while True:
                 while not same(got) and time.monotonic() < end:
                     time.sleep(0.2)
@@ -396,7 +403,7 @@ class Session:
                 if same(got) or time.monotonic() >= end:
                     break
             if not same(got):
-                diff, text = screen_diff(got.pixels, want, got.w, got.h, span)
+                diff, text = screen_diff(got.pixels, want, got.w, got.h, span, cspan)
                 stem = self.path(os.path.splitext(os.path.basename(ref))[0])
                 with open(stem + '-got.png', 'wb') as fh:
                     fh.write(got.png(4))

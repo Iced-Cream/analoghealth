@@ -119,7 +119,7 @@ def parse(path):
 
 
 def merge_wait(line, following):
-    """`wait N` straight before `expect-screen REF [T] [rows=..]` (or before `shot X` and
+    """`wait N` straight before `expect-screen REF [T] [rows=..] [cols=..]` (or before `shot X` and
     then that check) -> the lines to run instead of the next one or two: the check polling
     for N + T s and confirming the match holds (`settle`), then the shot if there was one;
     or None. The wait only gave the screen time to settle, and the check already retries,
@@ -133,13 +133,13 @@ def merge_wait(line, following):
     if nxt[0][0].lower() != 'expect-screen':
         return None
     e = nxt[0]
-    t = [x for x in e[2:] if not x.startswith('rows=')]
+    t = [x for x in e[2:] if not x.startswith(('rows=', 'cols='))]
     try:
         total = float(w[1]) + (float(t[0]) if t else 0)
     except ValueError:
         return None
     return [' '.join(['expect-screen', e[1], '%g' % total, 'settle'] +
-                     [x for x in e[2:] if x.startswith('rows=')])] + shot
+                     [x for x in e[2:] if x.startswith(('rows=', 'cols='))])] + shot
 
 
 def sha256(path):
