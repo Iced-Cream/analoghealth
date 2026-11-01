@@ -657,6 +657,33 @@ class PlanTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'rows=A-B'):
             s.step('expect-screen r rows=9-2')
 
+    def test_expect_screen_cols_option(self):
+        w = 128
+        cols = [0] * w
+        cols[5] = 1 << 3                               # one lit pixel: row 3, column 5
+        lit = b''.join(c.to_bytes(8, 'big') for c in cols)
+        d = tempfile.mkdtemp()
+        with open(os.path.join(d, 'r.bin'), 'wb') as fh:
+            fh.write(bytes(w * 8))
+
+        class Rpc:
+            def screenshot(self):
+                return analogrun.elkrpc.Screen(w, 64, lit)
+        s = analogrun.Session.__new__(analogrun.Session)
+        s.out, s.refs, s.record_refs, s.rpc = d, d, False, Rpc()
+        s.step('expect-screen r cols=6-127')           # column 5 left out: a match
+        s.step('expect-screen r 0 rows=0-10 cols=10-20')
+        with self.assertRaisesRegex(AssertionError, r'columns 5-5.*comparing rows 0-5, columns 0-9'):
+            s.step('expect-screen r rows=0-5 cols=0-9 0')
+        with self.assertRaisesRegex(ValueError, 'cols=A-B'):
+            s.step('expect-screen r cols=20-128')
+        self.assertEqual(analogrun.screen_diff(lit, bytes(w * 8), w, 64, None, (6, 127)), ([], 'identical'))
+
+    def test_merge_wait_keeps_rows_and_cols(self):
+        tp = self.testplan
+        out = tp.merge_wait('wait 1', ['expect-screen r 2 rows=3-4 cols=5-6'])
+        self.assertEqual(out, ['expect-screen r 3 settle rows=3-4 cols=5-6'])
+
 
 class NoPolicyTest(unittest.TestCase):
     """Without a write policy the runner writes wherever it is told."""
