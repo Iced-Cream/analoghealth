@@ -610,10 +610,31 @@ class PlanTest(unittest.TestCase):
                                  self.plan('name = d\nemulator = yes\n[midi]\ncc 1 7 100\n')])
         self.assertEqual(rc, 0, out.getvalue())
 
-    def test_din_plan_refused_on_the_digitone(self):
-        rc, out = self.run_plan('name = dn\nunit = digitone\nemulator = yes\ndin = din-port\n[a]\nsend k.syx din\n')
+    def test_din_plan_on_the_digitone(self):
+        fake = Path(self.tmp.name, 'fake')
+        fake.mkdir()
+        session = ('class Session:\n'
+                   '    def __init__(self, port, out%s):\n'
+                   '        self.out, self.din = out, %s\n'
+                   '    def step(self, line):\n'
+                   '        with open(os.path.join(self.out, "steps.txt"), "a") as fh:\n'
+                   '            fh.write("%%s %%s\\n" %% (self.din, line))\n'
+                   '    def close(self):\n'
+                   '        pass\n')
+        head = ('import os\n'
+                'def open_port(name):\n'
+                '    return type("P", (), {"close": lambda self: None, "name": name})()\n')
+        plan = ('name = dn\nunit = digitone\nemulator = yes\nport = tcp:127.0.0.1:7311\ndigirun = fake\n'
+                'din = tcp:127.0.0.1:7322\n[a]\nsend k.syx din\n')
+        (fake / 'digirun.py').write_text(head + session % ('', 'None'))
+        rc, out = self.run_plan(plan)                  # a digirun without DIN legs
         self.assertEqual(rc, 1)
-        self.assertIn('first failure, din: DIN steps run on the Rytm and A4 only so far', out)
+        self.assertIn('first failure, din: this digirun.py has no DIN legs', out)
+        (fake / 'digirun.py').write_text(head + session % (', din=None', 'din.name'))
+        rc, out = self.run_plan(plan)
+        self.assertEqual(rc, 0, out)
+        run = sorted(Path(self.tmp.name, 'runs').iterdir())[-1]
+        self.assertEqual((run / 'steps.txt').read_text().splitlines(), ['tcp:127.0.0.1:7322 send k.syx din'])
 
     def test_plain_steps_file_is_not_a_plan(self):
         self.assertFalse(self.testplan.is_plan(self.plan('cc 1 2 3\nwait 0\n')))

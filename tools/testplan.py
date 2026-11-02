@@ -11,7 +11,7 @@ list of analogrun steps (see analogrun.py) or audio steps:
     port = Analog Rytm            # or the emulator's "rytm-emu usb out,rytm-emu usb in", or tcp:HOST:PORT
     din = USB MIDI Interface      # the MIDI interface on the unit's DIN ports, for send/capture ... din
                                   # (analogrun --din wins over it; opened only when a step uses din;
-                                  # Rytm and A4 only)
+                                  # on a Digitone, a digirun.py with --din)
     digirun = C:/path/to/digihealth/tools      # digitone: where digirun.py is (or DIGIRUN_PATH)
     emulator = yes                # an emulator run: no lock, references may be recorded
     record-refs = yes             # (emulator only) expect-screen saves references
@@ -55,6 +55,7 @@ names (elkrpc, midisock), so such a plan runs in a process of its own:
 """
 import contextlib
 import hashlib
+import inspect
 import json
 import os
 import re
@@ -278,13 +279,13 @@ class Plan:
     def run(self):
         t0 = time.monotonic()
         digest = None
-        if self.din and self.unit in DIGI_UNITS:
-            self.results.append(('din', 'FAIL', 'DIN steps run on the Rytm and A4 only so far'))
-            return self.finish(t0, digest)
         try:
             mod = self.runner()
         except ImportError as e:
             self.results.append(('runner', 'FAIL', 'no digirun.py (digirun = its folder): %s' % e))
+            return self.finish(t0, digest)
+        if self.din and 'din' not in inspect.signature(mod.Session).parameters:
+            self.results.append(('din', 'FAIL', 'this digirun.py has no DIN legs (send/capture ... din)'))
             return self.finish(t0, digest)
         # digirun prints what its steps report: into the log, as analogrun's OUT does
         with contextlib.redirect_stdout(self.log) if mod.__name__ == 'digirun' else contextlib.nullcontext():
