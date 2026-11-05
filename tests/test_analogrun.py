@@ -705,6 +705,46 @@ class PlanTest(unittest.TestCase):
         out = tp.merge_wait('wait 1', ['expect-screen r 2 rows=3-4 cols=5-6'])
         self.assertEqual(out, ['expect-screen r 3 settle rows=3-4 cols=5-6'])
 
+    def test_expect_screen_else_tap(self):
+        # A page key that toggles between two subpages (the Rytm's TRIG): the screen is the other
+        # subpage until KEY is tapped once; else-tap taps it, then the check matches.
+        w = 128
+        cols = [0] * w
+        cols[5] = 1 << 3
+        other, want = b''.join(c.to_bytes(8, 'big') for c in cols), bytes(w * 8)
+        d = tempfile.mkdtemp()
+        with open(os.path.join(d, 'r.bin'), 'wb') as fh:
+            fh.write(want)
+        state = {'page': 1, 'taps': [], 'stuck': False}
+
+        class Rpc:
+            def screenshot(self):
+                return analogrun.elkrpc.Screen(w, 64, want if state['page'] == 0 else other)
+
+        class Keys:
+            def tap(self, key, ms=None):
+                state['taps'].append(key)
+                if not state['stuck']:
+                    state['page'] ^= 1
+        s = analogrun.Session.__new__(analogrun.Session)
+        s.out, s.refs, s.record_refs, s.rpc, s._keys = d, d, False, Rpc(), Keys()
+        s.step('expect-screen r 0 else-tap=TRIG tries=1')
+        self.assertEqual(state['taps'], ['TRIG'])
+        s.step('expect-screen r 0 else-tap=TRIG')        # already a match: no tap
+        self.assertEqual(state['taps'], ['TRIG'])
+        state['page'], state['stuck'] = 1, True                  # a key the unit does not take
+        with self.assertRaisesRegex(AssertionError, 'screen differs'):
+            s.step('expect-screen r 0 cols=0-9 else-tap=TRIG tries=2')   # 2 taps, then it fails as usual
+        self.assertEqual(state['taps'], ['TRIG', 'TRIG', 'TRIG'])
+        with self.assertRaisesRegex(ValueError, 'tries= goes with else-tap'):
+            s.step('expect-screen r tries=2')
+        with self.assertRaisesRegex(ValueError, 'tries=N'):
+            s.step('expect-screen r else-tap=TRIG tries=9')
+
+    def test_merge_wait_keeps_else_tap(self):
+        out = self.testplan.merge_wait('wait 0.8', ['expect-screen r 2 rows=12-52 else-tap=TRIG tries=1'])
+        self.assertEqual(out, ['expect-screen r 2.8 settle rows=12-52 else-tap=TRIG tries=1'])
+
 
 class NoPolicyTest(unittest.TestCase):
     """Without a write policy the runner writes wherever it is told."""
