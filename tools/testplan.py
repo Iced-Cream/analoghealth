@@ -80,6 +80,17 @@ def uses_din(steps):
     return False
 
 
+def uses_short(steps):
+    """Whether any capture step reads short messages (short, nrpn=, cc=)."""
+    for _, lines in steps:
+        for l in lines:
+            w = shlex.split(l, comments=True)
+            if w and w[0].lower() == 'capture' and any(
+                    x.lower() == 'short' or x.lower().startswith(('nrpn=', 'cc=')) for x in w[2:]):
+                return True
+    return False
+
+
 def is_plan(path):
     """A plan has settings or [step] headers; a plain steps file has neither."""
     try:
@@ -309,9 +320,12 @@ class Plan:
                 except Exception as e:           # noqa: BLE001
                     self.results.append(('flash', 'FAIL', str(e)))
                     return self.finish(t0, digest)
-            port = runner.open_port(self.port)
+            # short messages (capture ... short) only when a step asks: else the ports open as before
+            short = uses_short(self.steps) and hasattr(runner, 'wants_short')
+            opener = (lambda name: runner.open_port(name, short=True)) if short else runner.open_port
+            port = opener(self.port)
             try:
-                din = runner.open_port(self.din) if self.din else None
+                din = opener(self.din) if self.din else None
             except BaseException:
                 port.close()
                 port = None
