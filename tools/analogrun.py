@@ -109,6 +109,10 @@ Key steps open a analoghealth key session on first use and close it (releasing
 any synthetic key) at the end; everything else works on a stock OS. Each
 command here is the only user of the port while it runs: close Transfer,
 Overbridge's MIDI, screendump and analogusb.py first.
+
+On Windows every MIDI call has a time limit (ANALOGRUN_WINMM_TIMEOUT seconds,
+default 10, twice that to open a port; midiwatch.py): a call stuck in the
+Windows MIDI service ends the run with exit 4 instead of hanging it.
 """
 import argparse
 import json
@@ -963,4 +967,11 @@ def _main(ap, args):
 
 
 if __name__ == '__main__':
-    sys.exit(main())
+    import midiwatch
+    try:
+        rc = main()
+    except midiwatch.Stuck as e:
+        say('\nerror: %s' % e)
+        rc = midiwatch.STUCK_EXIT
+    # after a hung winmm call a normal exit can wait on it for good
+    sys.exit(midiwatch.exit_if_stuck(rc))
