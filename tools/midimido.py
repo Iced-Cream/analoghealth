@@ -1,18 +1,24 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 """Mido transport shared by diagnostics and keys; adapted from the measurement runner."""
+import collections
 import time
+
+import shortmsg
 
 
 class Port:
-    def __new__(cls, name=None):
+    def __new__(cls, name=None, short=False):
         import midisock
         if midisock.is_address(name):           # an emulator over TCP: no MIDI ports
-            return midisock.Port(name)
+            return midisock.Port(name, short=short)
         return super().__new__(cls)
 
-    def __init__(self, name=None):
+    def __init__(self, name=None, short=False):
         import mido
         self.mido = mido
+        # short=True also keeps notes, CCs and NRPNs (not real time), for take_short()
+        self.keeps_short = short
+        self.shorts = collections.deque(maxlen=20000)
         # NAME is part of both port names, or 'IN,OUT' names them apart.
         pair = [p.strip() for p in name.lower().split(',', 1)] if name and ',' in name else None
         wanted = (name.lower(),) if name else ('analog rytm', 'analog four')
@@ -44,12 +50,24 @@ class Port:
         messages = []
         deadline = time.monotonic() + seconds
         while time.monotonic() < deadline:
-            messages.extend(bytes(message.bytes()) for message in self.incoming.iter_pending()
-                            if message.type == 'sysex')
+            for message in self.incoming.iter_pending():
+                if message.type == 'sysex':
+                    messages.append(bytes(message.bytes()))
+                elif self.keeps_short:
+                    m = bytes(message.bytes())
+                    if m and m[0] < 0xF8:
+                        self.shorts.append(shortmsg.stamp(m))
             if until and until(messages):
                 break
             time.sleep(0.002)
         return messages
+
+    def take_short(self):
+        """-> [(monotonic time, bytes)] of the short messages since the last call (read
+        from the port during receive())."""
+        out = list(self.shorts)
+        self.shorts.clear()
+        return out
 
     def close(self):
         self.incoming.close()

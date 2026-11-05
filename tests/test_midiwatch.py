@@ -63,7 +63,10 @@ class WatchdogTest(unittest.TestCase):
 class WinmidiTest(unittest.TestCase):
     def setUp(self):
         self.fake = FakeDLL()
-        with mock.patch.object(ctypes, 'WinDLL', lambda name, **kw: self.fake, create=True):
+        # off Windows there is no WinDLL or WINFUNCTYPE: the fake DLL and CFUNCTYPE stand in
+        with mock.patch.object(ctypes, 'WinDLL', lambda name, **kw: self.fake, create=True), \
+                mock.patch.object(ctypes, 'WINFUNCTYPE', getattr(ctypes, 'WINFUNCTYPE', ctypes.CFUNCTYPE),
+                                  create=True):
             sys.modules.pop('winmidi', None)
             self.winmidi = importlib.import_module('winmidi')
         self.saved = midiwatch.WATCHDOG
@@ -91,6 +94,12 @@ class WinmidiTest(unittest.TestCase):
         p = self.winmidi.Port('Analog Rytm')
         p.hin, p.hout = self.winmidi.wintypes.HANDLE(1), self.winmidi.wintypes.HANDLE(2)
         return p          # the fake opens write no handle
+
+    def test_short_open_that_hangs(self):
+        self.fake.hang.add('midiInOpen')
+        with self.assertRaises(midiwatch.Stuck) as e:
+            self.winmidi.Port('Analog Rytm', short=True)
+        self.assertEqual(e.exception.call, 'midiInOpen')
 
     def test_clean_close(self):
         self.opened().close()

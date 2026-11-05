@@ -5,9 +5,12 @@ analog-emu (--usb-midi-tcp ADDR) and digiemu's USB MIDI server carry the port as
 byte stream both ways, so a host without virtual MIDI ports (Windows) needs no loopMIDI, and
 each emulator can have an address of its own. Same interface as winmidi.Port.
 """
+import collections
 import socket
 import threading
 import time
+
+import shortmsg
 
 PREFIX = 'tcp:'
 
@@ -17,7 +20,7 @@ def is_address(name):
 
 
 class Port:
-    def __init__(self, address):
+    def __init__(self, address, short=False):
         host, _, port = address[len(PREFIX):].rpartition(':')
         try:
             self.sock = socket.create_connection((host or '127.0.0.1', int(port)), timeout=5)
@@ -27,6 +30,10 @@ class Port:
         self.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         self.name = address
         self.msgs, self.partial = [], None
+        # short=True also keeps notes, CCs and NRPNs (not real time), for take_short()
+        self.keeps_short = short
+        self.shorts = collections.deque(maxlen=20000)
+        self.parser = shortmsg.Parser()
         self.cond = threading.Condition()
         threading.Thread(target=self._reader, daemon=True).start()
 
@@ -45,6 +52,10 @@ class Port:
                             if b == 0xF7:
                                 self.msgs.append(bytes(self.partial))
                                 self.partial = None
+                        elif self.keeps_short:
+                            m = self.parser.feed(b)
+                            if m:
+                                self.shorts.append(shortmsg.stamp(m))
                     self.cond.notify_all()
         except OSError:
             return
@@ -68,6 +79,13 @@ class Port:
                 if (until and until(out)) or left <= 0:
                     return out
                 self.cond.wait(min(left, 0.05))
+
+    def take_short(self):
+        """-> [(monotonic time, bytes)] of the short messages since the last call."""
+        with self.cond:
+            out = list(self.shorts)
+            self.shorts.clear()
+        return out
 
     def close(self):
         try:

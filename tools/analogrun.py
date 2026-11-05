@@ -71,6 +71,14 @@ Steps (one per line or separated by ';'; '#' starts a comment):
                           when nothing came. any: stop unless something came; none: stop
                           if anything came. din: what came out of its DIN MIDI output
                           since the last send there, not USB
+    capture FILE.txt S [any|none] short [nrpn=CH:MSB:LSB[:VAL]].. [cc=CH:NUM[:VAL]].. [din]
+                          the same for short messages instead of SysEx: notes, CCs and
+                          NRPNs (no clock or other real time), saved as text with the
+                          NRPNs they carry decoded; each nrpn=/cc= (which imply short)
+                          stops the run unless such a message came (VAL: the NRPN's
+                          value, CC 6 << 7 | CC 38 when a CC 38 follows, else CC 6).
+                          The ports are opened to keep short messages only when a step
+                          asks for them, so SysEx-only runs read them as before
     ping                  the unit's product, name and OS version (RPC Ping, read-only)
     save-project N NAME SEQ  key-driven SAVE PROJECT into slot N (keys SEQ, ending on the
                           save), checked, then renamed NAME; slot N must be empty (a
@@ -115,6 +123,7 @@ import sys
 import time
 
 import elkrpc
+import shortmsg
 import testplan
 import unitdata
 import writepolicy
@@ -153,6 +162,21 @@ class Tap:
         self.port = port
         self.seen = []
         self.since = None                # a list while a capture step is listening
+        self.since_short = None          # the same for short messages (a port opened short)
+
+    @property
+    def short(self):
+        return bool(getattr(self.port, 'keeps_short', False))
+
+    def listen(self):
+        """Keep what arrives from now on for the next capture step."""
+        self.since = []
+        self.listen_short()
+
+    def listen_short(self):
+        if self.short:
+            self.port.take_short()               # what came before this is not kept
+            self.since_short = []
 
     def send(self, data):
         self.port.send(data)
@@ -165,6 +189,10 @@ class Tap:
         self.seen.extend(msgs)
         if self.since is not None:
             self.since.extend(msgs)
+        if self.short:
+            shorts = self.port.take_short()
+            if self.since_short is not None:
+                self.since_short.extend(shorts)
         return msgs
 
 
@@ -459,13 +487,18 @@ class Session:
             tap, a = self.leg(a, 1)
             msgs = load_syx(self.path(a[0]))
             writepolicy.before_dumps(self, msgs)     # over USB RPC, whichever port sends
-            tap.since = []                   # a capture step after this keeps the replies
+            tap.listen()                     # a capture step after this keeps the replies
             self.send_dump(msgs, port=tap)
             say('  sent %d messages, %d bytes%s' % (len(msgs), sum(map(len, msgs)),
                                                     ' over DIN' if tap is self.din else ''))
         elif op == 'capture':
             # capture FILE S [any|none] [din]: the replies to a send, or the silence, as evidence
             tap, a = self.leg(a, 2)
+            matchers = [m for m in map(shortmsg.parse_matcher, a[2:]) if m]
+            short = bool(matchers) or any(w.lower() == 'short' for w in a[2:])
+            if short:
+                self.capture_short(tap, a, matchers)
+                return
             want = a[2].lower() if len(a) > 2 else None
             if want not in (None, 'any', 'none') or len(a) > 3:
                 raise ValueError('capture FILE S [any|none] [din]')
@@ -540,6 +573,42 @@ class Session:
             say('  finished listening')
         else:
             raise ValueError('unknown step %r' % op)
+
+    def capture_short(self, tap, a, matchers):
+        """capture FILE S [any|none] short [nrpn=..] [cc=..]: the short messages since the last
+        send (or this step), saved as text, then the checks."""
+        rest = [w for w in a[2:] if w.lower() != 'short' and not shortmsg.parse_matcher(w)]
+        want = rest[0].lower() if rest else None
+        if want not in (None, 'any', 'none') or len(rest) > 1:
+            raise ValueError('capture FILE S [any|none] short [nrpn=CH:MSB:LSB[:VAL]] '
+                             '[cc=CH:NUM[:VAL]] [din]')
+        if not tap.short:
+            raise ValueError('capture ... short: this port was opened without short messages '
+                             '(analogrun opens it so when a step has short, nrpn= or cc=)')
+        start = time.monotonic()
+        if tap.since_short is None:
+            tap.listen_short()
+        end = start + float(a[1])
+        while time.monotonic() < end:
+            tap.receive(min(0.05, max(end - time.monotonic(), 0)))
+        got, tap.since_short = tap.since_short, []    # the next capture keeps only what comes after
+        msgs = [m for _, m in got]
+        with open(self.path(a[0]), 'w', encoding='utf-8') as fh:
+            fh.write(shortmsg.text(got, start))
+        found = shortmsg.nrpns(msgs)
+        say('  captured %d short messages, %d NRPN values%s' % (
+            len(msgs), len(found), ' over DIN' if tap is self.din else ''))
+        if want == 'any' and not msgs:
+            raise AssertionError('no short message came within %s s' % a[1])
+        if want == 'none' and msgs:
+            raise AssertionError('%d short message(s) came (saved in %s)'
+                                 % (len(msgs), os.path.basename(a[0])))
+        missing = [m for m in matchers if not shortmsg.matches(m, msgs)]
+        if missing:
+            seen = sorted({'%d:%d:%d' % f[:3] for f in found})
+            raise AssertionError('no %s came within %s s (NRPNs seen: %s; saved in %s)' % (
+                ', '.join('%s=%s' % (k, ':'.join(map(str, n))) for k, n in missing), a[1],
+                ', '.join(seen) or 'none', os.path.basename(a[0])))
 
     def run(self, text):
         lines = [s for line in text.splitlines() for s in line.split(';')]
@@ -642,12 +711,28 @@ def diff_png(w, h, diff):
     return elkrpc.Screen(w, h, pixels).png(4)
 
 
-def open_port(name='Analog Rytm'):
+def open_port(name='Analog Rytm', short=False):
+    """The unit's (or an interface's) MIDI port; short=True also keeps short messages
+    (notes, CCs, NRPNs) for capture ... short. Without it the port is as it always was."""
     if sys.platform == 'win32':
         from winmidi import Port
     else:
         from midimido import Port
-    return Port(name)
+    return Port(name, short=True) if short else Port(name)
+
+
+def wants_short(text):
+    """Whether steps text has a capture step that reads short messages."""
+    for line in text.splitlines():
+        for part in line.split(';'):
+            try:
+                w = shlex.split(part, comments=True)
+            except ValueError:
+                continue
+            if w and w[0].lower() == 'capture' and any(
+                    x.lower() == 'short' or x.lower().startswith(('nrpn=', 'cc=')) for x in w[2:]):
+                return True
+    return False
 
 
 def progress(frac):
@@ -745,9 +830,21 @@ def _main(ap, args):
         if args.cmd == 'kit-roundtrip' and not (want or request or args.keys):
             ap.error('kit-roundtrip needs --kit N (or --keys / --request)')
 
-    port = open_port(args.port or 'Analog Rytm')
+    text = None                         # run/do: the steps, read first (short messages?)
+    if args.cmd == 'do':
+        text = args.steps
+    elif args.cmd == 'run':
+        if args.script == '-':
+            text = sys.stdin.read()
+        else:
+            with open(args.script) as fh:
+                text = fh.read()
+    short = bool(text) and wants_short(text)
+    # short messages only when a step asks: else the ports open exactly as before
+    opener = (lambda name: open_port(name, short=True)) if short else open_port
+    port = opener(args.port or 'Analog Rytm')
     try:
-        din = open_port(args.din) if args.din else None
+        din = opener(args.din) if args.din else None
     except BaseException:
         port.close()
         raise
@@ -761,13 +858,6 @@ def _main(ap, args):
             say('%s: %dx%d, %d lit pixels' % (args.out, screen.w, screen.h, screen.lit()))
         elif args.cmd in ('run', 'do'):
             os.makedirs(args.out, exist_ok=True)
-            if args.cmd == 'do':
-                text = args.steps
-            elif args.script == '-':
-                text = sys.stdin.read()
-            else:
-                with open(args.script) as fh:
-                    text = fh.read()
             s.run(text)
             say('done')
         elif args.cmd == 'info':
