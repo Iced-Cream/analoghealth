@@ -2,13 +2,21 @@
 """A tiny SysEx client over the Windows MIDI API (winmm, through ctypes: no
 packages). Opens an Analog Rytm MKII's or Analog Four MKII's USB MIDI ports, sends one SysEx message and
 collects whatever SysEx comes back for a while."""
+import collections
 import ctypes
 import time
 from ctypes import wintypes
 
+import shortmsg
+
 winmm = ctypes.WinDLL('winmm')
 MHDR_DONE = 0x1
 CALLBACK_NULL = 0
+CALLBACK_FUNCTION = 0x30000
+MIM_DATA = 0x3C3
+# void CALLBACK MidiInProc(HMIDIIN, UINT wMsg, DWORD_PTR instance, DWORD_PTR p1, DWORD_PTR p2)
+MIDIINPROC = ctypes.WINFUNCTYPE(None, wintypes.HANDLE, wintypes.UINT, ctypes.c_size_t,
+                                ctypes.c_size_t, ctypes.c_size_t)
 
 
 class MIDIHDR(ctypes.Structure):
@@ -75,13 +83,23 @@ class Port:
     def __new__(cls, name=None, *args, **kw):
         import midisock
         if midisock.is_address(name):           # an emulator over TCP: no MIDI ports
-            return midisock.Port(name)
+            return midisock.Port(name, short=kw.get('short', False))
         return super().__new__(cls)
 
-    def __init__(self, name=None, nbuf=16, size=65536):
+    def __init__(self, name=None, nbuf=16, size=65536, short=False):
         i, o = find(name)
         self.hin, self.hout = wintypes.HANDLE(), wintypes.HANDLE()
-        r = winmm.midiInOpen(ctypes.byref(self.hin), i, 0, 0, CALLBACK_NULL)
+        # short=True: winmm hands short messages (MIM_DATA) only to a callback, so the input
+        # is opened with one that keeps them for take_short(). SysEx still arrives in the
+        # buffers below, polled as without it.
+        self.keeps_short = short
+        self.shorts = collections.deque(maxlen=20000)
+        self._proc = MIDIINPROC(self._on_input) if short else None    # kept alive with the port
+        if short:
+            r = winmm.midiInOpen(ctypes.byref(self.hin), i, ctypes.cast(self._proc, ctypes.c_void_p),
+                                 0, CALLBACK_FUNCTION)
+        else:
+            r = winmm.midiInOpen(ctypes.byref(self.hin), i, 0, 0, CALLBACK_NULL)
         if r:
             raise OSError('midiInOpen failed: %d (is another program using it?)' % r)
         r = winmm.midiOutOpen(ctypes.byref(self.hout), o, 0, 0, CALLBACK_NULL)
@@ -96,6 +114,24 @@ class Port:
             winmm.midiInAddBuffer(self.hin, ctypes.byref(h), ctypes.sizeof(h))
             self.bufs.append((h, mem))
         winmm.midiInStart(self.hin)
+        if short:
+            # Measured with loopMIDI on the PC: short messages sent within ~50 ms of the
+            # start can be lost (18 of 20 fresh opens without a pause, none with 0.05 s).
+            time.sleep(0.1)
+
+    def _on_input(self, _handle, msg, _instance, p1, _p2):
+        # The driver's thread: no winmm calls here, only keep the message.
+        if msg == MIM_DATA:
+            m = shortmsg.from_word(p1)
+            if m:
+                self.shorts.append(shortmsg.stamp(m))
+
+    def take_short(self):
+        """-> [(monotonic time, bytes)] of the short messages since the last call."""
+        out = []
+        while self.shorts:
+            out.append(self.shorts.popleft())
+        return out
 
     def send(self, data):
         mem = ctypes.create_string_buffer(bytes(data), len(data))
