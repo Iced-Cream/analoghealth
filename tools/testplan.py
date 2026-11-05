@@ -406,4 +406,11 @@ if __name__ == '__main__':
     ap.add_argument('--din')
     ap.add_argument('--quiet', action='store_true')
     args = ap.parse_args()
-    sys.exit(run_plan(args.plan, args.port, args.quiet, args.din))
+    import midiwatch
+    try:
+        rc = run_plan(args.plan, args.port, args.quiet, args.din)
+    except midiwatch.Stuck as e:
+        print('error: %s' % e, flush=True)
+        rc = midiwatch.STUCK_EXIT
+    # after a hung winmm call a normal exit can wait on it for good
+    sys.exit(midiwatch.exit_if_stuck(rc))

@@ -985,4 +985,14 @@ def main(argv=None):
 
 
 if __name__ == '__main__':
-    main()
+    import midiwatch
+    try:
+        main()
+        rc = 0
+    except SystemExit as e:
+        rc = e.code
+    except midiwatch.Stuck as e:
+        print('error: %s' % e, flush=True)
+        rc = midiwatch.STUCK_EXIT
+    # after a hung winmm call a normal exit can wait on it for good
+    sys.exit(midiwatch.exit_if_stuck(rc))

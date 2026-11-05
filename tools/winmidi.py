@@ -1,12 +1,24 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 """A tiny SysEx client over the Windows MIDI API (winmm, through ctypes: no
 packages). Opens an Analog Rytm MKII's or Analog Four MKII's USB MIDI ports, sends one SysEx message and
-collects whatever SysEx comes back for a while."""
+collects whatever SysEx comes back for a while.
+
+Every winmm call runs under midiwatch's watchdog: one that does not return in
+ANALOGRUN_WINMM_TIMEOUT seconds (default 10; opening a port gets twice that)
+raises midiwatch.Stuck instead of hanging the run."""
 import ctypes
 import time
 from ctypes import wintypes
 
+import midiwatch
+
 winmm = ctypes.WinDLL('winmm')
+OPEN_FACTOR = 2         # opening a port may wait for the MIDI service to set it up
+
+
+def _w(name, *args, timeout=None):
+    """winmm.<name>(*args) under the watchdog."""
+    return midiwatch.WATCHDOG.call(name, getattr(winmm, name), *args, timeout=timeout)
 MHDR_DONE = 0x1
 CALLBACK_NULL = 0
 
@@ -24,9 +36,9 @@ MIDIHDR._fields_ = [('lpData', ctypes.c_void_p), ('dwBufferLength', wintypes.DWO
 
 def _names(count, caps_fn, struct):
     out = []
-    for i in range(count()):
+    for i in range(_w(count)):
         c = struct()
-        caps_fn(i, ctypes.byref(c), ctypes.sizeof(c))
+        _w(caps_fn, i, ctypes.byref(c), ctypes.sizeof(c))
         out.append(c.szPname)
     return out
 
@@ -54,8 +66,8 @@ def _pick(ports, names):
 def find(name=None):
     """-> (input, output) device numbers. NAME is part of both port names, or
     'IN,OUT' to name them apart (an emulator's loopback ports)."""
-    ins = _names(winmm.midiInGetNumDevs, winmm.midiInGetDevCapsW, _InCaps)
-    outs = _names(winmm.midiOutGetNumDevs, winmm.midiOutGetDevCapsW, _OutCaps)
+    ins = _names('midiInGetNumDevs', 'midiInGetDevCapsW', _InCaps)
+    outs = _names('midiOutGetNumDevs', 'midiOutGetDevCapsW', _OutCaps)
     if name and ',' in name:
         a, b = name.lower().split(',', 1)
         i, o = _pick(ins, (a.strip(),)), _pick(outs, (b.strip(),))
@@ -81,38 +93,43 @@ class Port:
     def __init__(self, name=None, nbuf=16, size=65536):
         i, o = find(name)
         self.hin, self.hout = wintypes.HANDLE(), wintypes.HANDLE()
-        r = winmm.midiInOpen(ctypes.byref(self.hin), i, 0, 0, CALLBACK_NULL)
+        self.bufs = []
+        opening = midiwatch.WATCHDOG.timeout * OPEN_FACTOR
+        r = _w('midiInOpen', ctypes.byref(self.hin), i, 0, 0, CALLBACK_NULL, timeout=opening)
         if r:
             raise OSError('midiInOpen failed: %d (is another program using it?)' % r)
-        r = winmm.midiOutOpen(ctypes.byref(self.hout), o, 0, 0, CALLBACK_NULL)
-        if r:
-            winmm.midiInClose(self.hin)
-            raise OSError('midiOutOpen failed: %d' % r)
-        self.bufs = []
-        for _ in range(nbuf):
-            mem = ctypes.create_string_buffer(size)
-            h = MIDIHDR(lpData=ctypes.cast(mem, ctypes.c_void_p), dwBufferLength=size)
-            winmm.midiInPrepareHeader(self.hin, ctypes.byref(h), ctypes.sizeof(h))
-            winmm.midiInAddBuffer(self.hin, ctypes.byref(h), ctypes.sizeof(h))
-            self.bufs.append((h, mem))
-        winmm.midiInStart(self.hin)
+        try:
+            r = _w('midiOutOpen', ctypes.byref(self.hout), o, 0, 0, CALLBACK_NULL, timeout=opening)
+            if r:
+                raise OSError('midiOutOpen failed: %d' % r)
+            for _ in range(nbuf):
+                mem = ctypes.create_string_buffer(size)
+                h = MIDIHDR(lpData=ctypes.cast(mem, ctypes.c_void_p), dwBufferLength=size)
+                _w('midiInPrepareHeader', self.hin, ctypes.byref(h), ctypes.sizeof(h))
+                _w('midiInAddBuffer', self.hin, ctypes.byref(h), ctypes.sizeof(h))
+                self.bufs.append((h, mem))
+            _w('midiInStart', self.hin)
+        except BaseException:
+            self.close()
+            raise
 
     def send(self, data):
         mem = ctypes.create_string_buffer(bytes(data), len(data))
+        self._sending = mem         # a hung call may still read it
         h = MIDIHDR(lpData=ctypes.cast(mem, ctypes.c_void_p), dwBufferLength=len(data))
-        winmm.midiOutPrepareHeader(self.hout, ctypes.byref(h), ctypes.sizeof(h))
-        r = winmm.midiOutLongMsg(self.hout, ctypes.byref(h), ctypes.sizeof(h))
+        _w('midiOutPrepareHeader', self.hout, ctypes.byref(h), ctypes.sizeof(h))
+        r = _w('midiOutLongMsg', self.hout, ctypes.byref(h), ctypes.sizeof(h))
         if r:
             raise OSError('midiOutLongMsg failed: %d' % r)
         t = time.time()
         while not h.dwFlags & MHDR_DONE and time.time() - t < 5:
             time.sleep(0.001)
-        winmm.midiOutUnprepareHeader(self.hout, ctypes.byref(h), ctypes.sizeof(h))
+        _w('midiOutUnprepareHeader', self.hout, ctypes.byref(h), ctypes.sizeof(h))
 
     def send_short(self, *data):
         """A channel message (note, CC): up to three bytes."""
         word = sum(b << (8 * k) for k, b in enumerate(data))
-        r = winmm.midiOutShortMsg(self.hout, wintypes.DWORD(word))
+        r = _w('midiOutShortMsg', self.hout, wintypes.DWORD(word))
         if r:
             raise OSError('midiOutShortMsg failed: %d' % r)
 
@@ -128,19 +145,28 @@ class Port:
                         msgs.append(bytes(mem.raw[:n]))
                     h.dwBytesRecorded = 0
                     h.dwFlags &= ~MHDR_DONE
-                    winmm.midiInAddBuffer(self.hin, ctypes.byref(h), ctypes.sizeof(h))
+                    _w('midiInAddBuffer', self.hin, ctypes.byref(h), ctypes.sizeof(h))
             if until and until(msgs):
                 break
             time.sleep(0.002)
         return msgs
 
     def close(self):
-        winmm.midiInStop(self.hin)
-        winmm.midiInReset(self.hin)
-        for h, _mem in self.bufs:
-            winmm.midiInUnprepareHeader(self.hin, ctypes.byref(h), ctypes.sizeof(h))
-        winmm.midiInClose(self.hin)
-        winmm.midiOutClose(self.hout)
+        # After a hung call every other one would hang behind it (or fail at once): leave the
+        # handles to the process's end, which midiwatch.hard_exit makes immediate.
+        hin, hout = self.hin, self.hout
+        self.hin, self.hout = wintypes.HANDLE(), wintypes.HANDLE()
+        if midiwatch.stuck():
+            return
+        if hin:
+            _w('midiInStop', hin)
+            _w('midiInReset', hin)
+            for h, _mem in self.bufs:
+                _w('midiInUnprepareHeader', hin, ctypes.byref(h), ctypes.sizeof(h))
+            _w('midiInClose', hin)
+        if hout:
+            _w('midiOutReset', hout)
+            _w('midiOutClose', hout)
 
 
 if __name__ == '__main__':
@@ -151,3 +177,4 @@ if __name__ == '__main__':
             print(m.hex(' '))
     finally:
         p.close()
+    midiwatch.exit_if_stuck(0)
