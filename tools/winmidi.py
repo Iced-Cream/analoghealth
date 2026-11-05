@@ -114,6 +114,10 @@ class Port:
             winmm.midiInAddBuffer(self.hin, ctypes.byref(h), ctypes.sizeof(h))
             self.bufs.append((h, mem))
         winmm.midiInStart(self.hin)
+        if short:
+            # Measured with loopMIDI on the PC: short messages sent within ~50 ms of the
+            # start can be lost (18 of 20 fresh opens without a pause, none with 0.05 s).
+            time.sleep(0.1)
 
     def _on_input(self, _handle, msg, _instance, p1, _p2):
         # The driver's thread: no winmm calls here, only keep the message.
