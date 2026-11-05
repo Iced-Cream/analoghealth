@@ -53,7 +53,9 @@ Steps (one per line or separated by ';'; '#' starts a comment):
                           rows=A-B (anywhere after NAME) compares rows A..B only,
                           cols=A-B columns A..B only (a dialog whose box width follows
                           a name, say);
-                          settle: a match must still hold 0.4 s later
+                          settle: a match must still hold 0.4 s later;
+                          else-tap=KEY [tries=N]: on a mismatch tap KEY and check again,
+                          N times at most (default 1, up to 4), before failing
     cc CH NUM VAL         MIDI channel 1-16
     nrpn CH MSB LSB VAL   VAL 0-16383 (CC 99, 98, 6, 38)
     note CH NOTE VEL [MS] note on, off after MS (default 100)
@@ -361,8 +363,19 @@ class Session:
             # cols=A-B likewise compares only columns A..B (127 at most).
             # `settle` (testplan adds it when it folds a wait into the check): a match counts
             # only when the screen still matches 0.4 s later.
+            # else-tap=KEY [tries=N] (default 1): when the screen does not match (after the retries), tap
+            # KEY, wait 0.8 s and check again, at most N times; then fail as usual. For a page key that
+            # reopens a remembered subpage and toggles while on it (the Rytm's TRIG: page 1 / EUCLIDEAN).
             settle = 'settle' in a[1:]
             a = [w for w in a if w != 'settle']
+            else_tap = [w[9:] for w in a[1:] if w.startswith('else-tap=')]
+            tries = [w[6:] for w in a[1:] if w.startswith('tries=')]
+            if tries and not else_tap:
+                raise ValueError('tries= goes with else-tap=KEY')
+            tries = int(tries[0]) if tries else 1
+            if else_tap and not 1 <= tries <= 4:
+                raise ValueError('tries=N with 1 <= N <= 4, not %d' % tries)
+            a = [w for w in a if not w.startswith(('else-tap=', 'tries='))]
             opts = {k: [w for w in a[1:] if w.startswith(k + '=')] for k in ('rows', 'cols')}
             a = a[:1] + [w for w in a[1:] if not w.startswith(('rows=', 'cols='))]
             limits = {}
@@ -387,21 +400,31 @@ class Session:
                 return
             with open(refpath, 'rb') as fh:
                 want = fh.read()
-            end = time.monotonic() + (float(a[1]) if len(a) > 1 else 0)
+            wait_s = float(a[1]) if len(a) > 1 else 0
 
             def same(g):
                 return g.pixels == want if span is None and cspan is None else not screen_diff(
                     g.pixels, want, g.w, g.h, span, cspan)[0]
-            while True:
-                while not same(got) and time.monotonic() < end:
-                    time.sleep(0.2)
+
+            def poll(got, end):
+                while True:
+                    while not same(got) and time.monotonic() < end:
+                        time.sleep(0.2)
+                        got = self.rpc.screenshot()
+                    if not settle or not same(got):
+                        return got
+                    time.sleep(0.4)
                     got = self.rpc.screenshot()
-                if not settle or not same(got):
+                    if same(got) or time.monotonic() >= end:
+                        return got
+            got = poll(got, time.monotonic() + wait_s)
+            for k in range(tries if else_tap else 0):
+                if same(got):
                     break
-                time.sleep(0.4)
-                got = self.rpc.screenshot()
-                if same(got) or time.monotonic() >= end:
-                    break
+                say('  not %s yet: tap %s (%d of %d)' % (ref, else_tap[0], k + 1, tries))
+                self.keys.tap(else_tap[0], None)
+                time.sleep(0.8)
+                got = poll(self.rpc.screenshot(), time.monotonic() + wait_s)
             if not same(got):
                 diff, text = screen_diff(got.pixels, want, got.w, got.h, span, cspan)
                 stem = self.path(os.path.splitext(os.path.basename(ref))[0])

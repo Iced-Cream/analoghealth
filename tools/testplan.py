@@ -134,13 +134,14 @@ def merge_wait(line, following):
     if nxt[0][0].lower() != 'expect-screen':
         return None
     e = nxt[0]
-    t = [x for x in e[2:] if not x.startswith(('rows=', 'cols='))]
+    keep = ('rows=', 'cols=', 'else-tap=', 'tries=')
+    t = [x for x in e[2:] if not x.startswith(keep)]
     try:
         total = float(w[1]) + (float(t[0]) if t else 0)
     except ValueError:
         return None
     return [' '.join(['expect-screen', e[1], '%g' % total, 'settle'] +
-                     [x for x in e[2:] if x.startswith(('rows=', 'cols='))])] + shot
+                     [x for x in e[2:] if x.startswith(keep)])] + shot
 
 
 def sha256(path):
