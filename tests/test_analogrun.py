@@ -407,6 +407,27 @@ class SessionTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, r'\[din\]'):
             s.step('capture x.syx 0.1 any some din')
 
+    def test_bend_and_aftertouch(self):
+        self.s.run('bend 1 0; bend 3 -8192; bend 16 8191; at 2 90; at 4 60 33')
+        self.assertEqual(self.unit.short, [(0xE0, 0, 64), (0xE2, 0, 0), (0xEF, 127, 127),
+                                           (0xD1, 90), (0xA3, 60, 33)])
+        for bad in ('bend 1 8192', 'bend 0 0', 'at 1 128', 'at 1', 'cc 17 1 1', 'cc 1 1 128',
+                    'nrpn 1 1 2 16384', 'cc 1 2', 'note 1 2 3 4 5'):
+            with self.assertRaises(ValueError, msg=bad):
+                self.s.step(bad)
+
+    def test_din_short_messages(self):
+        din = FakeDin()
+        s = analogrun.Session(self.unit, self.tmp.name, din)
+        s.run('cc 6 35 66 din; nrpn 1 0 112 9856 din; note 2 36 100 1 din; bend 1 4096 din; '
+              'at 1 70 din; at 1 60 20 din')
+        self.assertEqual(din.got, [bytes(m) for m in (
+            (0xB5, 35, 66), (0xB0, 99, 0), (0xB0, 98, 112), (0xB0, 6, 77), (0xB0, 38, 0),
+            (0x91, 36, 100), (0x81, 36, 0), (0xE0, 0, 96), (0xD0, 70), (0xA0, 60, 20))])
+        self.assertEqual(self.unit.short, [])            # nothing went over USB
+        with self.assertRaisesRegex(ValueError, 'no DIN MIDI port'):
+            self.s.step('cc 1 7 100 din')
+
     def test_din_needs_a_din_port(self):
         Path(self.tmp.name, 'req.syx').write_bytes(DUMP_REQUEST)
         with self.assertRaisesRegex(ValueError, 'no DIN MIDI port'):
@@ -595,6 +616,17 @@ class PlanTest(unittest.TestCase):
         self.assertTrue(din.closed)
         rc, out = self.run_plan('name = d\nemulator = yes\ndin = din-port\n' + body)    # or the setting
         self.assertEqual(rc, 0, out)
+
+    def test_din_plan_short_steps(self):
+        din = FakeDin()
+        analogrun.open_port = ports(self.unit, din)       # setUp's cleanup puts it back
+        rc, out = self.run_plan('name = d\nemulator = yes\ndin = din-port\n[midi]\ncc 1 7 100 din\nbend 1 0 din\n')
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(din.got, [bytes((0xB0, 7, 100)), bytes((0xE0, 0, 64))])
+        steps = [('x', ['nrpn 1 0 112 9856 din'])]
+        self.assertTrue(self.testplan.uses_din(steps))
+        self.assertTrue(self.testplan.uses_din([('x', ['at 1 70 din'])]))
+        self.assertFalse(self.testplan.uses_din([('x', ['cc 1 7 100'])]))
 
     def test_din_setting_opens_only_for_din_steps(self):
         def no_din(name='Analog Rytm'):

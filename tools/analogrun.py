@@ -6,7 +6,8 @@ screen while a key is held. The Analog Rytm MKII by default; --port NAME
 --port "IN,OUT" names the input and output ports apart (an emulator's
 loopback ports: --port "a4-emu usb out,a4-emu usb in"). --din PORT, in the
 same forms, names the MIDI interface cabled to the unit's DIN ports (or an
-emulator's DIN MIDI over TCP) for send and capture with a trailing din. The
+emulator's DIN MIDI over TCP) for send, capture, cc, nrpn, note, bend and
+at with a trailing din. The
 kit and pattern dump commands work on both units: the unit's product id (RPC
 Ping) picks its SysEx device byte.
 
@@ -56,9 +57,13 @@ Steps (one per line or separated by ';'; '#' starts a comment):
                           settle: a match must still hold 0.4 s later;
                           else-tap=KEY [tries=N]: on a mismatch tap KEY and check again,
                           N times at most (default 1, up to 4), before failing
-    cc CH NUM VAL         MIDI channel 1-16
-    nrpn CH MSB LSB VAL   VAL 0-16383 (CC 99, 98, 6, 38)
-    note CH NOTE VEL [MS] note on, off after MS (default 100)
+    cc CH NUM VAL [din]   MIDI channel 1-16; din: into the unit's DIN MIDI input (--din),
+                          not USB (the same for nrpn, note, bend and at)
+    nrpn CH MSB LSB VAL [din]  VAL 0-16383 (CC 99, 98, 6, 38)
+    note CH NOTE VEL [MS] [din]  note on, off after MS (default 100)
+    bend CH VAL [din]     pitch bend, VAL -8192..8191 (0 = centre)
+    at CH VAL [din]       channel aftertouch (pressure) 0-127
+    at CH NOTE VAL [din]  polyphonic aftertouch of one note
     wait S
     stats                 one analoghealth CPU/DSP/heap line
     dump ADDR LEN FILE    DDR to a file (analoghealth)
@@ -152,6 +157,19 @@ def dump_request(kind, number=0, device=RYTM):
         raise ValueError('number 0..127')
     return bytes([0xF0, 0x00, 0x20, 0x3C, device, 0x00, kind, 0x01, 0x01, number,
                   0x00, 0x00, 0x00, 0x05, 0xF7])
+
+
+def channel(ch):
+    """MIDI channel 1-16 -> the status nibble 0-15."""
+    if not 1 <= ch <= 16:
+        raise ValueError('MIDI channel 1..16, not %d' % ch)
+    return ch - 1
+
+
+def data7(v):
+    if not 0 <= v <= 127:
+        raise ValueError('MIDI data byte 0..127, not %d' % v)
+    return v
 
 
 class Tap:
@@ -316,17 +334,45 @@ class Session:
                 say('  %s: %dx%d, %d lit, at %.0f ms (asked %d)' % (name, s.w, s.h, s.lit(), ms, at))
         return between
 
-    def cc(self, ch, num, val):
-        self.port.send_short(0xB0 | (ch - 1), num, val)
+    def cc(self, ch, num, val, tap=None):
+        (tap or self.port).send_short(0xB0 | channel(ch), data7(num), data7(val))
 
-    def nrpn(self, ch, msb, lsb, val):
-        for num, v in ((99, msb), (98, lsb), (6, val >> 7), (38, val & 0x7F)):
-            self.cc(ch, num, v)
+    def nrpn(self, ch, msb, lsb, val, tap=None):
+        if not 0 <= val < 16384:
+            raise ValueError('NRPN value 0..16383, not %d' % val)
+        for n, v in ((99, msb), (98, lsb), (6, val >> 7), (38, val & 0x7F)):
+            self.cc(ch, n, v, tap)
 
-    def note(self, ch, note, vel, ms=100):
-        self.port.send_short(0x90 | (ch - 1), note, vel)
+    def note(self, ch, note, vel, ms=100, tap=None):
+        tap = tap or self.port
+        tap.send_short(0x90 | channel(ch), data7(note), data7(vel))
         time.sleep(ms / 1000)
-        self.port.send_short(0x80 | (ch - 1), note, 0)
+        tap.send_short(0x80 | channel(ch), data7(note), 0)
+
+    def bend(self, ch, val, tap=None):
+        if not -8192 <= val <= 8191:
+            raise ValueError('pitch bend -8192..8191, not %d' % val)
+        v = val + 8192
+        (tap or self.port).send_short(0xE0 | channel(ch), v & 0x7F, v >> 7)
+
+    def aftertouch(self, ch, *a, tap=None):
+        """at CH VAL (channel pressure) or at CH NOTE VAL (polyphonic)."""
+        tap = tap or self.port
+        if len(a) == 1:
+            tap.send_short(0xD0 | channel(ch), data7(a[0]))
+        elif len(a) == 2:
+            tap.send_short(0xA0 | channel(ch), data7(a[0]), data7(a[1]))
+        else:
+            raise ValueError('at CH VAL or at CH NOTE VAL')
+
+    def short_leg(self, a):
+        """A cc/nrpn/note/bend/at step's words -> (its Tap, the numbers). A trailing din
+        sends into the unit's DIN MIDI input (--din) instead of USB."""
+        if a and a[-1].lower() == 'din':
+            if self.din is None:
+                raise ValueError('din: no DIN MIDI port (give --din PORT)')
+            return self.din, [int(x, 0) for x in a[:-1]]
+        return self.port, [int(x, 0) for x in a]
 
     def key_steps(self, text):
         play_sequence(self.keys, key_sequence(text))
@@ -466,12 +512,13 @@ class Session:
                     fh.write(diff_png(got.w, got.h, diff))
                 raise AssertionError('screen differs from %s: %s (saved %s-got.png, -diff.png)'
                                      % (ref, text, os.path.basename(stem)))
-        elif op == 'cc':
-            self.cc(*map(num, a))
-        elif op == 'nrpn':
-            self.nrpn(*map(num, a))
-        elif op == 'note':
-            self.note(*map(num, a))
+        elif op in ('cc', 'nrpn', 'note', 'bend', 'at'):
+            tap, n = self.short_leg(a)
+            want = {'cc': (3,), 'nrpn': (4,), 'note': (3, 4), 'bend': (2,), 'at': (2, 3)}[op]
+            if len(n) not in want:
+                raise ValueError('%s: %s numbers, not %d' % (op, ' or '.join(map(str, want)), len(n)))
+            {'cc': self.cc, 'nrpn': self.nrpn, 'note': self.note, 'bend': self.bend,
+             'at': self.aftertouch}[op](*n, tap=tap)
         elif op == 'wait':
             time.sleep(float(a[0]))
         elif op == 'stats':

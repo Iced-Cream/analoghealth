@@ -70,12 +70,15 @@ DIGI_UNITS = ('digitone',)               # units whose steps run through digirun
 
 
 def uses_din(steps):
-    """Whether any send/capture step ends in din (analogrun's DIN legs)."""
+    """Whether any step ends in din (analogrun's DIN legs: send, capture, cc, nrpn, note,
+    bend, at)."""
     for _, lines in steps:
         for l in lines:
             w = shlex.split(l, comments=True)
-            if w and w[-1].lower() == 'din' and (w[0].lower() == 'send' and len(w) > 2 or
-                                                 w[0].lower() == 'capture' and len(w) > 3):
+            if w and w[-1].lower() == 'din' and (
+                    w[0].lower() == 'send' and len(w) > 2 or
+                    w[0].lower() == 'capture' and len(w) > 3 or
+                    w[0].lower() in ('cc', 'nrpn', 'note', 'bend', 'at') and len(w) > 3):
                 return True
     return False
 
