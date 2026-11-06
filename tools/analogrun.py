@@ -67,6 +67,11 @@ Steps (one per line or separated by ';'; '#' starts a comment):
     wait S
     stats                 one analoghealth CPU/DSP/heap line
     dump ADDR LEN FILE    DDR to a file (analoghealth)
+    peek-set FILE ITEM..  several reads into one file, ITEM ADDR:LEN or [PTR]+OFF:LEN
+                          (through the u32 at PTR); see peekset.py (analoghealth)
+    peek-grown FILE A B C BASEPTR MAXBYTES  the blocks a heap bitmap gained: bits clear
+                          in peek-set file A and set in B and C, the units around them
+                          read (unit 0 at [BASEPTR]); see peekset.py (analoghealth)
     send FILE.syx [din]   send the SysEx messages in a file (e.g. a saved dump); din: into
                           the unit's DIN MIDI input (--din), the write policy still asked
                           over USB
@@ -132,7 +137,8 @@ import shortmsg
 import testplan
 import unitdata
 import writepolicy
-from analogusb import Diag, RemoteKeys, decode_stats, key_sequence, peek, play_sequence, req_stats, pad_caps
+from analogusb import Diag, PEEK_RANGES, RemoteKeys, decode_stats, key_sequence, peek, play_sequence, req_stats, pad_caps
+import peekset
 import analogpads
 
 ELEKTRON = bytes([0xF0, 0x00, 0x20, 0x3C])
@@ -141,6 +147,11 @@ RYTM, FOUR = 0x07, 0x06
 # RPC Ping product id -> dump device byte. By id, not name: the A4 MKII OS
 # answers "Analog Four" on a unit but "Analog Keys" in the emulator.
 DUMP_DEVICES = {0x10: RYTM, 0x0E: FOUR}       # Analog Rytm MKII, Analog Four MKII
+
+
+def readable(addr, length):
+    """Inside one of analoghealth's peek ranges (DDR, the SRAM)."""
+    return any(lo <= addr and addr + length <= hi for lo, hi in PEEK_RANGES)
 
 
 def dump_device(pid, name=''):
@@ -544,6 +555,37 @@ class Session:
             data = peek(self.diag, num(a[0]), num(a[1]))
             with open(self.path(a[2]), 'wb') as fh:
                 fh.write(data)
+        elif op == 'peek-set':
+            if len(a) < 2:
+                raise ValueError('peek-set FILE ITEM...')
+            items = [peekset.parse_item(w) for w in a[1:]]
+            blob, notes = peekset.run_set(lambda ad, n: peek(self.diag, ad, n), readable, items)
+            with open(self.path(a[0]), 'wb') as fh:
+                fh.write(blob)
+            say('  %s: %d items, %d bytes' % (a[0], len(items), len(blob)))
+            for n in notes:
+                say('  ' + n)
+        elif op == 'peek-grown':
+            if len(a) != 6:
+                raise ValueError('peek-grown FILE A B C BASEPTR MAXBYTES')
+            snaps = []
+            for f in a[1:4]:
+                with open(self.path(f), 'rb') as fh:
+                    r = peekset.records(fh.read())
+                if len(r) != 1 or not r[0][3]:
+                    raise ValueError('peek-grown: %s is not a one-item peek-set file' % f)
+                snaps.append(r[0][3])
+            base, = struct.unpack('>I', peek(self.diag, num(a[4]), 4))
+            maxbytes = num(a[5])
+            if not 0 < maxbytes <= 1 << 20:
+                raise ValueError('peek-grown: MAXBYTES 1..1048576')
+            blob, notes, count = peekset.run_grown(lambda ad, n: peek(self.diag, ad, n), readable,
+                                                   snaps[0], snaps[1], snaps[2], base, maxbytes)
+            with open(self.path(a[0]), 'wb') as fh:
+                fh.write(blob)
+            say('  %s: %d blocks grown, %d bytes read (unit 0 at 0x%08x)' % (a[0], count, len(blob), base))
+            for n in notes:
+                say('  ' + n)
         elif op == 'send':
             tap, a = self.leg(a, 1)
             msgs = load_syx(self.path(a[0]))
