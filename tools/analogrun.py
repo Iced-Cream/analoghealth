@@ -521,6 +521,13 @@ class Session:
              'at': self.aftertouch}[op](*n, tap=tap)
         elif op == 'wait':
             time.sleep(float(a[0]))
+        elif op == 'key-wait':
+            # key-wait S: later key steps wait up to S s for the unit to answer (default 3)
+            s = float(a[0])
+            if not 1 <= s <= 300:
+                raise ValueError('key-wait S: 1 to 300 seconds')
+            self.keys.status_wait = s
+            say('  key steps now wait up to %g s for an answer' % s)
         elif op == 'stats':
             s = decode_stats(self.diag.call(req_stats))
             say('  second %d: CPU %.1f %%, DSP %.1f %% (peak %.1f %%), heap free %d' % (

@@ -280,7 +280,7 @@ class RemoteKeys:
         # The OS's MIDI input task stalls for a moment while it loads a project (a YES
         # that starts one): keep asking for up to 3 s before giving up.
         operation = self.operation if operation is None else operation
-        deadline = time.monotonic() + 3
+        deadline = time.monotonic() + self.status_wait
         while True:
             try:
                 return self._report(self.diag.call(req_key_status, self.session, operation,
@@ -289,8 +289,12 @@ class RemoteKeys:
                 if time.monotonic() >= deadline:
                     raise
 
+    # How long a status may go unanswered (s). 3 by default; a plan's `key-wait S` raises it for
+    # keys that start something long, such as a sample load, which stalls the OS's MIDI input task.
+    status_wait = 3
+
     def _wait(self, report, cancelling=False):
-        deadline = time.monotonic() + 3
+        deadline = time.monotonic() + self.status_wait
         while report['state'] == 'accepted' or report['cleanup']:
             if time.monotonic() >= deadline:
                 raise TimeoutError('key cleanup or action still pending; not replayed')
