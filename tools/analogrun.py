@@ -528,6 +528,13 @@ class Session:
                 raise ValueError('key-wait S: 1 to 300 seconds')
             self.keys.status_wait = s
             say('  key steps now wait up to %g s for an answer' % s)
+        elif op == 'save-wait':
+            # save-wait S: later save-project steps wait up to S s for the slot to fill (default 15)
+            s = float(a[0])
+            if not 1 <= s <= 900:
+                raise ValueError('save-wait S: 1 to 900 seconds')
+            self.save_wait = s
+            say('  save-project steps now wait up to %g s for the saved project' % s)
         elif op == 'stats':
             s = decode_stats(self.diag.call(req_stats))
             say('  second %d: CPU %.1f %%, DSP %.1f %% (peak %.1f %%), heap free %d' % (
@@ -590,14 +597,17 @@ class Session:
                 raise unitdata.DataError('%s holds %r: save-project needs an empty slot '
                                          '(data clear it first)' % (path, held))
             self.key_steps(' '.join(a[2:]))
-            end = time.monotonic() + 15
+            wait_s = getattr(self, 'save_wait', 15)
+            start = time.monotonic()
+            end = start + wait_s
             while unitdata.target(self.rpc, path)[0] is None:
                 if time.monotonic() > end:
-                    raise unitdata.DataError('%s still empty 15 s after the keys: check the unit'
-                                             % path)
+                    raise unitdata.DataError('%s still empty %g s after the keys: check the unit'
+                                             % (path, wait_s))
                 time.sleep(0.5)
+            took = time.monotonic() - start
             mark(self, path, name)
-            say('  %s saved, named %r' % (path, name))
+            say('  %s saved, named %r (slot filled %.1f s after the keys)' % (path, name, took))
             # SAVE PROJECT AS makes the saved copy the active project (seen on the unit).
             note = writepolicy.after_save_project(self, path, name)
             if note:
