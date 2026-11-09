@@ -1,11 +1,11 @@
 {
  "id": "analoghealth",
- "version": "1.3",
+ "version": "1.4",
  "title": "analoghealth",
  "category": "Performance",
  "author": "Iced-Cream, after irpina's digihealth",
  "license": "GPL-2.0-or-later",
- "description": "Diagnostics for the Analog Rytm MKII, after irpina's digihealth. Two SETTINGS rows. SYSTEM INFO shows CPU, DSP (the audio interrupt: sample voices and effects, not the analog voices), RAM and free sample memory in the top bar. The USB channel (SysEx device 0x7D) answers diagnostics and, while REMOTE KEYS is on (it is at power-on), bounded button and encoder commands from tools/analogusb.py; on this unit also pad strikes, pressure and releases as the panel sends them, and a log of the panel's bytes.",
+ "description": "Diagnostics for the Analog Rytm MKII, after irpina's digihealth. Three SETTINGS rows. CPU SAVE (off until ticked; needs core-ar2 0.12) turns on core's silent-voice skip, which lowers the DSP load and starts a skipped voice's next note from its power-on state, a slight change to the sound; the choice is kept in the project. SYSTEM INFO shows CPU, DSP (the audio interrupt: sample voices and effects, not the analog voices), RAM and free sample memory in the top bar. The USB channel (SysEx device 0x7D) answers diagnostics and, while REMOTE KEYS is on (it is at power-on), bounded button and encoder commands from tools/analogusb.py; on this unit also pad strikes, pressure and releases as the panel sends them, and a log of the panel's bytes.",
  "device": "analog-rytm-mk2",
  "os": "1.74",
  "sources": [
@@ -15,7 +15,8 @@
   "remote_keys.c",
   "remote_pads.c",
   "remote_pads.s",
-  "remote_keys.s"
+  "remote_keys.s",
+  "cpusave.s"
  ],
  "cflags": [
   "-DRK_OS_MINOR=74",
@@ -73,6 +74,11 @@
   },
   {
    "event": "ev_settings",
+   "fn": "cs_settings",
+   "order": 20
+  },
+  {
+   "event": "ev_settings",
    "fn": "rk_settings",
    "order": 30
   },
@@ -105,6 +111,11 @@
    "event": "ev_render_out",
    "fn": "si_render_out",
    "order": 50
+  },
+  {
+   "event": "ev_project",
+   "fn": "cs_project",
+   "order": 50
   }
  ],
  "requires": [
@@ -113,8 +124,17 @@
  "resources": {
   "names": [
    "settings:SYSTEM INFO",
+   "settings:CPU SAVE",
    "settings:REMOTE KEYS",
    "sysex:0x7d"
-  ]
- }
+  ],
+  "core": "0.12"
+ },
+ "storage": [
+  {
+   "sym": "ah_cpu_save",
+   "scope": "project",
+   "bits": 1
+  }
+ ]
 }
