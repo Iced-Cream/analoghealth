@@ -1,11 +1,11 @@
 {
  "id": "analoghealth",
- "version": "1.3",
+ "version": "1.3-spans",
  "title": "analoghealth",
  "category": "Performance",
  "author": "Iced-Cream, after irpina's digihealth",
  "license": "GPL-2.0-or-later",
- "description": "Diagnostics for the Analog Rytm MKII, after irpina's digihealth. Two SETTINGS rows. SYSTEM INFO shows CPU, DSP (the audio interrupt: sample voices and effects, not the analog voices), RAM and free sample memory in the top bar. The USB channel (SysEx device 0x7D) answers diagnostics and, while REMOTE KEYS is on (it is at power-on), bounded button and encoder commands from tools/analogusb.py; on this unit also pad strikes, pressure and releases as the panel sends them, and a log of the panel's bytes.",
+ "description": "MEASURING BUILD (DSP spans): Diagnostics for the Analog Rytm MKII, after irpina's digihealth. Two SETTINGS rows. SYSTEM INFO shows CPU, DSP (the audio interrupt: sample voices and effects, not the analog voices), RAM and free sample memory in the top bar. The USB channel (SysEx device 0x7D) answers diagnostics and, while REMOTE KEYS is on (it is at power-on), bounded button and encoder commands from tools/analogusb.py; on this unit also pad strikes, pressure and releases as the panel sends them, and a log of the panel's bytes.",
  "device": "analog-rytm-mk2",
  "os": "1.74",
  "sources": [
@@ -15,7 +15,8 @@
   "remote_keys.c",
   "remote_pads.c",
   "remote_pads.s",
-  "remote_keys.s"
+  "remote_keys.s",
+  "spans.s"
  ],
  "cflags": [
   "-DRK_OS_MINOR=74",
@@ -63,6 +64,55 @@
    "stock_sha256": "8f96d172c43d6e9d5f2d435bd2b96f60df07aaf653786f343036ee418a71b004",
    "op": "jmp",
    "target": "panel_rx"
+  },
+  {
+   "addr": "0x40121134",
+   "len": 6,
+   "stock_sha256": "2e4c18b189c0e55cfb3beeff96e48aa0adee0e73e340c16018c19cc16416b7c8",
+   "op": "jsr",
+   "target": "span_sl1"
+  },
+  {
+   "addr": "0x40121284",
+   "len": 6,
+   "stock_sha256": "e12a4d183c2ea64baa15d030a2c38771ab71ba113f831260c22a6d9f62e02254",
+   "op": "jsr",
+   "target": "span_sl2"
+  },
+  {
+   "addr": "0x401212b2",
+   "len": 6,
+   "stock_sha256": "286b9d00b3e690cdb325c3ffb68fb6762e0d02c3e1c8b0b05323d2e2c259309b",
+   "op": "jsr",
+   "target": "span_sl3"
+  },
+  {
+   "addr": "0x4011fe56",
+   "len": 6,
+   "stock_sha256": "522aaa8eb163156699ac309f4c338b0f18b58b7007bccc9ad477f0620619948b",
+   "op": "jsr",
+   "target": "span_mixa"
+  },
+  {
+   "addr": "0x40121406",
+   "len": 6,
+   "stock_sha256": "522aaa8eb163156699ac309f4c338b0f18b58b7007bccc9ad477f0620619948b",
+   "op": "jsr",
+   "target": "span_mixb"
+  },
+  {
+   "addr": "0x4010e7c4",
+   "len": 10,
+   "stock_sha256": "97dddb0c33d97bf8361c4505ba466f684c5faac47d4cab3bef6b3e4786502d3c",
+   "op": "jsr",
+   "target": "span_dly"
+  },
+  {
+   "addr": "0x4010e818",
+   "len": 10,
+   "stock_sha256": "3c7e9337d66defbaa002b7ee700f6de27e4ba53bdb35a31bb14e4a8101ea50c4",
+   "op": "jsr",
+   "target": "span_rev_site"
   }
  ],
  "subscribe": [
@@ -105,6 +155,16 @@
    "event": "ev_render_out",
    "fn": "si_render_out",
    "order": 50
+  },
+  {
+   "event": "ev_render_in",
+   "fn": "sp_render_in",
+   "order": 55
+  },
+  {
+   "event": "ev_render_out",
+   "fn": "sp_render_out",
+   "order": 45
   }
  ],
  "requires": [
