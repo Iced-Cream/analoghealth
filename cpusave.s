@@ -11,7 +11,7 @@
 | ev_project copies it into core's switch after every project load (at boot
 | too) and after CREATE NEW. Core's own switch, core_voice_skip_want, is the
 | user's choice only; mods that need stock's exact render hold the skip off
-| through core_voice_skip_hold, which this row neither reads nor writes.
+| through core_voice_skip_hold_add/_release (a count), which this row neither reads nor writes.
         .include "ar174.inc"
 
         .section .run, "ax"

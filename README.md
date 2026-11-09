@@ -150,7 +150,7 @@ the switch for it.
   loads with CPU SAVE off. Ticking or unticking it marks the project changed,
   as an edit does, so SAVE PROJECT keeps it in the +Drive slot.
 - **Other mods:** a mod that needs stock's exact render can hold the skip off
-  through core (`core_voice_skip_hold`); the row still shows your choice, and
+  through core (`core_voice_skip_hold_add` and `_release`); the row still shows your choice, and
   the skip comes back when that mod lets go.
 
 `cpusave.s` sets core's `core_voice_skip_want` from the row and, after every
