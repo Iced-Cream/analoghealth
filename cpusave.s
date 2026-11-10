@@ -1,8 +1,8 @@
 | SPDX-License-Identifier: GPL-2.0-or-later
-| analoghealth, CPU SAVE (Rytm only, core-ar2 0.12): the SETTINGS row that
+| analoghealth, CPU SAVE (Rytm only, core-ar2 0.14): the SETTINGS row that
 | turns core's silent-voice skip on or off, as digihealth's FAST AUDIO row
 | turns its render copy on. Core skips a voice slot's machine call while the
-| slot is silent (core-ar2 README, "The silent-voice skip (0.12)"); that lowers
+| slot is silent (core-ar2 README, "The silent-voice skip (0.14)"); that lowers
 | the DSP load, and the slot's next note starts from its power-on state, which
 | changes the sound slightly. So it is off unless the user turns it on.
 |

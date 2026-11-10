@@ -3,7 +3,7 @@
 A diagnostics mod for the Elektron Analog Rytm MKII (OS 1.74) and Analog Four
 MKII (OS 1.56): irpina's [digihealth](https://github.com/irpina/digihealth)
 for the Digitakt mk1, ported to the two analog machines. It adds two rows to
-SETTINGS, and on the Rytm with core-ar2 0.12 a third:
+SETTINGS, and on the Rytm with core-ar2 0.14 a third:
 
 - **SYSTEM INFO** shows CPU, DSP, RAM and (on the Rytm) free sample memory in
   the top bar. A read-only USB diagnostics channel lets `tools/analogusb.py`
@@ -12,7 +12,7 @@ SETTINGS, and on the Rytm with core-ar2 0.12 a third:
   the panel's buttons, and `tools/analogusb.py turn` turn its encoders, over
   USB: see [Remote keys](#remote-keys). Off, the unit refuses key commands and
   lets go of any key the computer holds; the diagnostics still answer.
-- **CPU SAVE** (Rytm only, off until you turn it on) turns on core-ar2 0.12's
+- **CPU SAVE** (Rytm only, off until you turn it on) turns on core-ar2 0.14's
   silent-voice skip, which lowers the DSP load but changes the sound
   slightly: see [CPU SAVE](#cpu-save).
 
@@ -21,7 +21,7 @@ digihealth's third row, **FAST AUDIO**, is not ported: see
 the same end, a lighter render.
 
 It is an [elekloader](https://github.com/irpina/elekloader) mod and needs the
-device's core: core-ar2 on the Rytm (0.12 from analoghealth 1.4; 1.3 was built and checked with 0.4), core-a4 on
+device's core: core-ar2 on the Rytm (0.14 from analoghealth 1.4; 1.3 was built and checked with 0.4), core-a4 on
 the A4 (built and checked with 0.1). elekloader builds a custom OS file on
 your own machine, from your stock OS file and the mods you pick; nothing from
 Elektron is distributed.
@@ -132,11 +132,11 @@ for the encoders (revision 4). See [the protocol reference](docs/REMOTE-KEYS.md)
 
 ## CPU SAVE
 
-Rytm only, from analoghealth 1.4, which needs core-ar2 0.12. Stock calls each
+Rytm only, from analoghealth 1.4, which needs core-ar2 0.14. Stock calls each
 of the 8 voice slots' machine routines on every audio block from the slot's
 first trig on, whether the voice still sounds or not, and that load never
-goes away until a power cycle. Core-ar2 0.12 can skip a slot's call while the
-slot is silent (its README, "The silent-voice skip (0.12)"), and CPU SAVE is
+goes away until a power cycle. Core-ar2 0.14 can skip a slot's call while the
+slot is silent (its README, "The silent-voice skip (0.14)"), and CPU SAVE is
 the switch for it.
 
 - **What it changes:** the DSP load drops once voices have gone quiet. The
@@ -207,7 +207,7 @@ python -m elekloader.lint out/analoghealth-1.4.elemod --stock Analog-Rytm_MKII_O
 |---|---|
 | `mod.json`, `a4/mod.json` | the mod for each device: its sites (by address, length and SHA-256), handlers and resources |
 | `build.py` | picks the device's manifest, reads each site's stock bytes from your stock file, checks the hash, and calls elekloader's SDK |
-| `cpusave.s` | Rytm only: the CPU SAVE row, its project field and core-ar2 0.12's skip switch |
+| `cpusave.s` | Rytm only: the CPU SAVE row, its project field and core-ar2 0.14's skip switch |
 | `sysinfo.s` | the SYSTEM INFO and REMOTE KEYS rows, the readout, the render and idle timing, the USB channel |
 | `ar174.inc`, `a4/a4156.inc` | the stock routines and data it uses: Rytm OS 1.74, A4 OS 1.56 |
 | `core_candidate.c`, `core_candidate.s`, `core_candidate.h` | the physical/synthetic input bridge on the button driver, and the encoder input, private to this mod |
