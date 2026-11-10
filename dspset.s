@@ -227,7 +227,8 @@ ds_rows:    .long   core_voice_skip_want,   ah_cpu_save,      str_voice
             .long   core_ui_skip_want,      ah_ui_skip,       str_ui
 | the row's icon, a load gauge, 9 x 9 in stock's Bitmap layout (blit
 | 0x400716e0): +4 width, +8 height, +12 longs per column, +16 the pixels
-| and +20 the mask, a long per column, the top row in bit 31.
+| and +20 the mask, a long per column, its bottom row in bit 31 (bitmaps
+| run bottom-up: drawn upright, the art below is rows 8..0 from bit 23).
 |   .........
 |   ..#####..
 |   .#.....#.
@@ -238,7 +239,7 @@ ds_rows:    .long   core_voice_skip_want,   ah_cpu_save,      str_voice
 |   #########
 |   .........
 icon_load:  .long   0, 9, 9, 1, icon_bits, icon_mask, 0
-icon_bits:  .long   0x1f000000, 0x21000000, 0x41000000, 0x41000000, 0x43000000, 0x45000000, 0x49000000, 0x31000000, 0x1f000000
+icon_bits:  .long   0x7c000000, 0x42000000, 0x41000000, 0x41000000, 0x61000000, 0x51000000, 0x49000000, 0x46000000, 0x7c000000
 icon_mask:  .long   0xff800000, 0xff800000, 0xff800000, 0xff800000, 0xff800000, 0xff800000, 0xff800000, 0xff800000, 0xff800000
 str_dsp:    .asciz  "DSP SETTINGS"
 str_head:   .asciz  "DSP"                   | the header: short, as stock's are (AUDIO ROUTING opens ROUTING)
