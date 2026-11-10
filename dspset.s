@@ -47,7 +47,17 @@ ds_label_dsp:
         lea     str_dsp, %a1
         bra     ds_string
 
-| draw and change: nothing, as stock's rows that open a submenu
+| draw(payload, item, bmp, x, y): the row's icon, as stock's GLOBAL rows
+| draw theirs (blit, not centred)
+ds_icon:
+        move.l  12(%sp), 4(%sp)         | bmp
+        move.l  #icon_load, 8(%sp)
+        move.l  16(%sp), 12(%sp)        | x
+        move.l  20(%sp), 16(%sp)        | y
+        clr.l   20(%sp)
+        jmp     BLIT
+
+| change: nothing, as stock's rows that open a submenu
 ds_nothing:
         rts
 
@@ -201,7 +211,7 @@ ds_project:
         rts
 
         .balign 4
-row_dsp:    .long   ds_label_dsp, ds_open, ds_nothing, ds_nothing
+row_dsp:    .long   ds_label_dsp, ds_open, ds_icon, ds_nothing
 rows:       .long   row_0, row_1, row_2, row_3, row_4
 row_0:      .long   ds_label_0, ds_select_0, ds_draw_0, ds_change_0
 row_1:      .long   ds_label_1, ds_select_1, ds_draw_1, ds_change_1
@@ -214,6 +224,21 @@ ds_rows:    .long   core_voice_skip_want,   ah_cpu_save,      str_voice
             .long   core_fx_skip_want,      ah_fx_skip,       str_fx
             .long   core_reverb_clear_want, ah_reverb_clear,  str_reverb
             .long   core_ui_skip_want,      ah_ui_skip,       str_ui
+| the row's icon, a load gauge, 9 x 9 in stock's Bitmap layout (blit
+| 0x400716e0): +4 width, +8 height, +12 longs per column, +16 the pixels
+| and +20 the mask, a long per column, the top row in bit 31.
+|   .........
+|   ..#####..
+|   .#.....#.
+|   #......##
+|   #.....#.#
+|   #....#..#
+|   #...#...#
+|   #########
+|   .........
+icon_load:  .long   0, 9, 9, 1, icon_bits, icon_mask, 0
+icon_bits:  .long   0x1f000000, 0x21000000, 0x41000000, 0x41000000, 0x43000000, 0x45000000, 0x49000000, 0x31000000, 0x1f000000
+icon_mask:  .long   0xff800000, 0xff800000, 0xff800000, 0xff800000, 0xff800000, 0xff800000, 0xff800000, 0xff800000, 0xff800000
 str_dsp:    .asciz  "DSP SETTINGS"
 str_head:   .asciz  "DSP"                   | the header: short, as stock's are (AUDIO ROUTING opens ROUTING)
 str_voice:  .asciz  "VOICE SKIP"
