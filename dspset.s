@@ -51,7 +51,8 @@ ds_label_dsp:
 | draw theirs (blit, not centred)
 ds_icon:
         move.l  12(%sp), 4(%sp)         | bmp
-        move.l  #icon_load, 8(%sp)
+        lea     icon_load, %a0
+        move.l  %a0, 8(%sp)
         move.l  16(%sp), 12(%sp)        | x
         move.l  20(%sp), 16(%sp)        | y
         clr.l   20(%sp)
