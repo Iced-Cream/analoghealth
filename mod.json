@@ -1,11 +1,11 @@
 {
  "id": "analoghealth",
- "version": "1.4",
+ "version": "1.5",
  "title": "analoghealth",
  "category": "Performance",
  "author": "Iced-Cream, after irpina's digihealth",
  "license": "GPL-2.0-or-later",
- "description": "Diagnostics for the Analog Rytm MKII, after irpina's digihealth. Three SETTINGS rows. CPU SAVE (off until ticked; needs core-ar2 0.14) turns on core's silent-voice skip, which lowers the DSP load and starts a skipped voice's next note from its power-on state, a slight change to the sound; the choice is kept in the project. SYSTEM INFO shows CPU, DSP (the audio interrupt: sample voices and effects, not the analog voices), RAM and free sample memory in the top bar. The USB channel (SysEx device 0x7D) answers diagnostics and, while REMOTE KEYS is on (it is at power-on), bounded button and encoder commands from tools/analogusb.py; on this unit also pad strikes, pressure and releases as the panel sends them, and a log of the panel's bytes.",
+ "description": "Diagnostics for the Analog Rytm MKII, after irpina's digihealth. Three GLOBAL menu rows. DSP SETTINGS (needs core-ar2 0.14) opens a menu with a checkbox for each of core's load savers, all off until ticked: VOICE SKIP (silent voices; a slight change to the sound), SAMPLE SKIP (idle sample layers), FX SKIP (zero sends and a silent delay), REVERB CLEAR (a silent reverb, cleared; changes the sound, acts with FX SKIP), DELAY CLEAR (a delay quiet for about 11 s, cleared; changes the sound, acts with FX SKIP) and UI SKIP (the screen's repeated look-ups); the choices are kept in the project. SYSTEM INFO shows CPU, DSP (the audio interrupt: sample voices and effects, not the analog voices), RAM and free sample memory in the top bar. The USB channel (SysEx device 0x7D) answers diagnostics and, while REMOTE KEYS is on (it is at power-on), bounded button and encoder commands from tools/analogusb.py; on this unit also pad strikes, pressure and releases as the panel sends them, and a log of the panel's bytes.",
  "device": "analog-rytm-mk2",
  "os": "1.74",
  "sources": [
@@ -16,7 +16,7 @@
   "remote_pads.c",
   "remote_pads.s",
   "remote_keys.s",
-  "cpusave.s"
+  "dspset.s"
  ],
  "cflags": [
   "-DRK_OS_MINOR=74",
@@ -74,7 +74,7 @@
   },
   {
    "event": "ev_settings",
-   "fn": "cs_settings",
+   "fn": "ds_settings",
    "order": 20
   },
   {
@@ -114,7 +114,7 @@
   },
   {
    "event": "ev_project",
-   "fn": "cs_project",
+   "fn": "ds_project",
    "order": 50
   }
  ],
@@ -124,7 +124,7 @@
  "resources": {
   "names": [
    "settings:SYSTEM INFO",
-   "settings:CPU SAVE",
+   "settings:DSP SETTINGS",
    "settings:REMOTE KEYS",
    "sysex:0x7d"
   ],
@@ -133,6 +133,31 @@
  "storage": [
   {
    "sym": "ah_cpu_save",
+   "scope": "project",
+   "bits": 1
+  },
+  {
+   "sym": "ah_sample_skip",
+   "scope": "project",
+   "bits": 1
+  },
+  {
+   "sym": "ah_fx_skip",
+   "scope": "project",
+   "bits": 1
+  },
+  {
+   "sym": "ah_reverb_clear",
+   "scope": "project",
+   "bits": 1
+  },
+  {
+   "sym": "ah_ui_skip",
+   "scope": "project",
+   "bits": 1
+  },
+  {
+   "sym": "ah_delay_clear",
    "scope": "project",
    "bits": 1
   }
