@@ -215,6 +215,7 @@ ds_rows:    .long   core_voice_skip_want,   ah_cpu_save,      str_voice
             .long   core_reverb_clear_want, ah_reverb_clear,  str_reverb
             .long   core_ui_skip_want,      ah_ui_skip,       str_ui
 str_dsp:    .asciz  "DSP SETTINGS"
+str_head:   .asciz  "DSP"                   | the header: short, as stock's are (AUDIO ROUTING opens ROUTING)
 str_voice:  .asciz  "VOICE SKIP"
 str_sample: .asciz  "SAMPLE SKIP"
 str_fx:     .asciz  "FX SKIP"
@@ -224,7 +225,7 @@ str_ui:     .asciz  "UI SKIP"
 
 | struct core_submenu (core-ar2 0.14, analog-rytm-mk2/settings.h); core
 | writes its last three words (.run is RAM)
-ds_menu:    .long   str_dsp, rows, NROWS, 0
+ds_menu:    .long   str_head, rows, NROWS, 0
             .long   0, 0, 0                 | core's
 
         .section .bss
