@@ -179,7 +179,7 @@ You need:
 
 ```bash
 python -m elekloader.patch --stock Analog-Rytm_MKII_OS1.74.syx \
-    --mod core-0.12.elemod --mod out/analoghealth-1.4.elemod \
+    --mod core-0.14.elemod --mod out/analoghealth-1.4.elemod \
     --out Analog-Rytm_MKII_OS1.74-health.syx --version AH14
 python -m elekloader.patch --stock Analog-Four_MKII_OS1.56.syx \
     --mod core-0.1.elemod --mod out/a4/analoghealth-1.2.elemod \
@@ -200,7 +200,7 @@ WSL) and elekloader, importable. The stock file picks the device:
 ```bash
 python build.py --stock Analog-Rytm_MKII_OS1.74.syx     # -> out/analoghealth-1.4.elemod (Rytm)
 python build.py --stock Analog-Four_MKII_OS1.56.syx --out out/a4   # (A4)
-python -m elekloader.lint out/analoghealth-1.4.elemod --stock Analog-Rytm_MKII_OS1.74.syx --with core-0.12.elemod
+python -m elekloader.lint out/analoghealth-1.4.elemod --stock Analog-Rytm_MKII_OS1.74.syx --with core-0.14.elemod
 ```
 
 | file | |
