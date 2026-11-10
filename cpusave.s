@@ -1,4 +1,5 @@
 | SPDX-License-Identifier: GPL-2.0-or-later
+| TEST BRANCH ONLY (sample-layer skip unit run): this row switches core_sample_skip_want, not the voice skip.
 | analoghealth, CPU SAVE (Rytm only, core-ar2 0.14): the SETTINGS row that
 | turns core's silent-voice skip on or off, as digihealth's FAST AUDIO row
 | turns its render copy on. Core skips a voice slot's machine call while the
@@ -64,7 +65,7 @@ cs_set:
         cmp.b   cs_on, %d0
         beq.s   1f                      | no change: nothing to keep
         move.b  %d0, cs_on
-        move.b  %d0, core_voice_skip_want
+        move.b  %d0, core_sample_skip_want
         move.l  %d0, -(%sp)             | value
         clr.l   -(%sp)                  | index: unused
         clr.l   -(%sp)                  | item: unused (project scope)
@@ -109,7 +110,7 @@ cs_project:
         sne     %d0
         andi.l  #1, %d0
         move.b  %d0, cs_on
-        move.b  %d0, core_voice_skip_want
+        move.b  %d0, core_sample_skip_want
         rts
 
         .balign 4
