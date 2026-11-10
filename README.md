@@ -12,12 +12,12 @@ SETTINGS, and on the Rytm with core-ar2 0.14 a third:
   the panel's buttons, and `tools/analogusb.py turn` turn its encoders, over
   USB: see [Remote keys](#remote-keys). Off, the unit refuses key commands and
   lets go of any key the computer holds; the diagnostics still answer.
-- **CPU SAVE** (Rytm only, off until you turn it on) turns on core-ar2 0.14's
-  silent-voice skip, which lowers the DSP load but changes the sound
-  slightly: see [CPU SAVE](#cpu-save).
+- **DSP SETTINGS** (Rytm only) opens a menu with a checkbox for each of
+  core-ar2 0.14's load savers, all off until you tick them; two of them change
+  the sound slightly: see [DSP SETTINGS](#dsp-settings).
 
 digihealth's third row, **FAST AUDIO**, is not ported: see
-[Why no FAST AUDIO](#why-no-fast-audio). CPU SAVE is the Rytm's own way to
+[Why no FAST AUDIO](#why-no-fast-audio). DSP SETTINGS is the Rytm's own way to
 the same end, a lighter render.
 
 It is an [elekloader](https://github.com/irpina/elekloader) mod and needs the
@@ -130,31 +130,34 @@ The protocol is digihealth's revision 2 with 128-bit key maps, because these
 machines have more keys than revision 2's 64-bit maps hold, and a TURN action
 for the encoders (revision 4). See [the protocol reference](docs/REMOTE-KEYS.md).
 
-## CPU SAVE
+## DSP SETTINGS
 
-Rytm only, from analoghealth 1.4, which needs core-ar2 0.14. Stock calls each
-of the 8 voice slots' machine routines on every audio block from the slot's
-first trig on, whether the voice still sounds or not, and that load never
-goes away until a power cycle. Core-ar2 0.14 can skip a slot's call while the
-slot is silent (its README, "The silent-voice skip (0.14)"), and CPU SAVE is
-the switch for it.
+Rytm only, from analoghealth 1.5, which needs core-ar2 0.14. The GLOBAL row
+DSP SETTINGS opens a menu (core-ar2's submenu, stock's checkbox menu view)
+with one checkbox for each of core's load savers. Each is off until you tick
+it, and each is core's own switch (its README has what each one does):
 
-- **What it changes:** the DSP load drops once voices have gone quiet. The
-  next note of a skipped slot starts from the slot's power-on state, as the
-  first note after a power-on does, instead of from wherever its noise
-  generator and filters had run to. That is a small change to the sound,
-  which is why the row is off unless you tick it.
-- **Where it is kept:** in the project (a 1-bit project field), so it stays
-  set after a power cycle and comes back with the project when you load it.
-  A project saved without it, or by a build with another storage layout,
-  loads with CPU SAVE off. Ticking or unticking it marks the project changed,
+| row | core switch | what it skips | sound |
+|---|---|---|---|
+| VOICE SKIP | `core_voice_skip_want` | a silent voice slot's machine call, every block | a skipped slot's next note starts from its power-on state: a small change |
+| SAMPLE SKIP | `core_sample_skip_want` | an idle sample layer's interpolation, filter and output | unchanged |
+| FX SKIP | `core_fx_skip_want` | send slots at 0, and the delay while its input and tail are silent | unchanged |
+| REVERB CLEAR | `core_reverb_clear_want` | a silent reverb, cleared and then skipped; acts only while FX SKIP is ticked | the next reverb tail starts from silence: a small change |
+| UI SKIP | `core_ui_skip_want` | the screen's repeated look-ups of which views are open | unchanged |
+
+- **Where they are kept:** in the project (a 1-bit project field each), so
+  they stay set after a power cycle and come back with the project when you
+  load it. A project saved without them, or by a build with another storage
+  layout, loads with them off. VOICE SKIP keeps 1.4's CPU SAVE field, so a
+  project saved with CPU SAVE ticked loads with VOICE SKIP ticked (build with
+  the same lockfile). Ticking or unticking a row marks the project changed,
   as an edit does, so SAVE PROJECT keeps it in the +Drive slot.
-- **Other mods:** a mod that needs stock's exact render can hold the skip off
-  through core (`core_voice_skip_hold_add` and `_release`); the row still shows your choice, and
-  the skip comes back when that mod lets go.
+- **Other mods:** a mod that needs stock's exact render can hold a saver off
+  through core (its `_hold_add` and `_release`); the row still shows your
+  choice, and the saver comes back when that mod lets go.
 
-`cpusave.s` sets core's `core_voice_skip_want` from the row and, after every
-project load (at boot too) and CREATE NEW, from the project's field.
+`dspset.s` sets core's switches from the rows and, after every project load
+(at boot too) and CREATE NEW, from the project's fields.
 
 ## Why no FAST AUDIO
 
@@ -179,7 +182,7 @@ You need:
 
 ```bash
 python -m elekloader.patch --stock Analog-Rytm_MKII_OS1.74.syx \
-    --mod core-0.14.elemod --mod out/analoghealth-1.4.elemod \
+    --mod core-0.14.elemod --mod out/analoghealth-1.5.elemod \
     --out Analog-Rytm_MKII_OS1.74-health.syx --version AH14
 python -m elekloader.patch --stock Analog-Four_MKII_OS1.56.syx \
     --mod core-0.1.elemod --mod out/a4/analoghealth-1.2.elemod \
@@ -198,16 +201,16 @@ The Digitakt mk1 cross toolchain (m68k binutils and gcc; on Debian or Ubuntu,
 WSL) and elekloader, importable. The stock file picks the device:
 
 ```bash
-python build.py --stock Analog-Rytm_MKII_OS1.74.syx     # -> out/analoghealth-1.4.elemod (Rytm)
+python build.py --stock Analog-Rytm_MKII_OS1.74.syx     # -> out/analoghealth-1.5.elemod (Rytm)
 python build.py --stock Analog-Four_MKII_OS1.56.syx --out out/a4   # (A4)
-python -m elekloader.lint out/analoghealth-1.4.elemod --stock Analog-Rytm_MKII_OS1.74.syx --with core-0.14.elemod
+python -m elekloader.lint out/analoghealth-1.5.elemod --stock Analog-Rytm_MKII_OS1.74.syx --with core-0.14.elemod
 ```
 
 | file | |
 |---|---|
 | `mod.json`, `a4/mod.json` | the mod for each device: its sites (by address, length and SHA-256), handlers and resources |
 | `build.py` | picks the device's manifest, reads each site's stock bytes from your stock file, checks the hash, and calls elekloader's SDK |
-| `cpusave.s` | Rytm only: the CPU SAVE row, its project field and core-ar2 0.14's skip switch |
+| `dspset.s` | Rytm only: the DSP SETTINGS row and menu, their project fields and core-ar2 0.14's switches |
 | `sysinfo.s` | the SYSTEM INFO and REMOTE KEYS rows, the readout, the render and idle timing, the USB channel |
 | `ar174.inc`, `a4/a4156.inc` | the stock routines and data it uses: Rytm OS 1.74, A4 OS 1.56 |
 | `core_candidate.c`, `core_candidate.s`, `core_candidate.h` | the physical/synthetic input bridge on the button driver, and the encoder input, private to this mod |
