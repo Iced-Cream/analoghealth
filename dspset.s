@@ -10,6 +10,8 @@
 |   FX SKIP       core_fx_skip_want      zero sends and a silent delay (exact)
 |   REVERB CLEAR  core_reverb_clear_want a silent reverb, cleared and skipped (changes the sound;
 |                                        acts only while FX SKIP is ticked)
+|   DELAY CLEAR   core_delay_clear_want  a delay quiet for ~11 s, cleared (changes the sound;
+|                                        acts only while FX SKIP is ticked)
 |   UI SKIP       core_ui_skip_want      the screen's repeated view look-ups (exact)
 |
 | Each choice is kept in the project (a 1-bit project-scope storage field),
@@ -21,7 +23,7 @@
 
         .section .run, "ax"
 
-NROWS = 5
+NROWS = 6
 
 | ---- the GLOBAL row ---------------------------------------------------------
 
@@ -86,6 +88,7 @@ ds_change_\n:
         ROW     2
         ROW     3
         ROW     4
+        ROW     5
 
 | a1 = row d1's entry in ds_rows (want, field, label); d0 changed
 ds_entry:
@@ -213,17 +216,19 @@ ds_project:
 
         .balign 4
 row_dsp:    .long   ds_label_dsp, ds_open, ds_icon, ds_nothing
-rows:       .long   row_0, row_1, row_2, row_3, row_4
+rows:       .long   row_0, row_1, row_2, row_3, row_4, row_5
 row_0:      .long   ds_label_0, ds_select_0, ds_draw_0, ds_change_0
 row_1:      .long   ds_label_1, ds_select_1, ds_draw_1, ds_change_1
 row_2:      .long   ds_label_2, ds_select_2, ds_draw_2, ds_change_2
 row_3:      .long   ds_label_3, ds_select_3, ds_draw_3, ds_change_3
 row_4:      .long   ds_label_4, ds_select_4, ds_draw_4, ds_change_4
+row_5:      .long   ds_label_5, ds_select_5, ds_draw_5, ds_change_5
 | per row: core's want byte, the project field, the label
 ds_rows:    .long   core_voice_skip_want,   ah_cpu_save,      str_voice
             .long   core_sample_skip_want,  ah_sample_skip,   str_sample
             .long   core_fx_skip_want,      ah_fx_skip,       str_fx
             .long   core_reverb_clear_want, ah_reverb_clear,  str_reverb
+            .long   core_delay_clear_want,  ah_delay_clear,   str_delay
             .long   core_ui_skip_want,      ah_ui_skip,       str_ui
 | the row's icon, a load gauge, 9 x 9 in stock's Bitmap layout (blit
 | 0x400716e0): +4 width, +8 height, +12 longs per column, +16 the pixels
@@ -247,6 +252,7 @@ str_voice:  .asciz  "VOICE SKIP"
 str_sample: .asciz  "SAMPLE SKIP"
 str_fx:     .asciz  "FX SKIP"
 str_reverb: .asciz  "REVERB CLEAR"
+str_delay:  .asciz  "DELAY CLEAR"
 str_ui:     .asciz  "UI SKIP"
         .balign 4
 
@@ -256,4 +262,4 @@ ds_menu:    .long   str_head, rows, NROWS, 0
             .long   0, 0, 0                 | core's
 
         .section .bss
-ds_on:      .skip 8                 | the rows' states (bytes 0..4), set by ds_project at boot
+ds_on:      .skip 8                 | the rows' states (bytes 0..5), set by ds_project at boot

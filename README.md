@@ -143,6 +143,7 @@ it, and each is core's own switch (its README has what each one does):
 | SAMPLE SKIP | `core_sample_skip_want` | an idle sample layer's interpolation, filter and output | unchanged |
 | FX SKIP | `core_fx_skip_want` | send slots at 0, and the delay while its input and tail are silent | unchanged |
 | REVERB CLEAR | `core_reverb_clear_want` | a silent reverb, cleared and then skipped; acts only while FX SKIP is ticked | the next reverb tail starts from silence: a small change |
+| DELAY CLEAR | `core_delay_clear_want` | a delay quiet for about 11 s, its line cleared; acts only while FX SKIP is ticked | the next echoes start from silence: a small change |
 | UI SKIP | `core_ui_skip_want` | the screen's repeated look-ups of which views are open | unchanged |
 
 - **Where they are kept:** in the project (a 1-bit project field each), so
