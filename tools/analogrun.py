@@ -132,7 +132,7 @@ import shortmsg
 import testplan
 import unitdata
 import writepolicy
-from analogusb import Diag, RemoteKeys, decode_stats, key_sequence, peek, play_sequence, req_stats, pad_caps
+from analogusb import Diag, RemoteKeys, check_split_text, decode_stats, key_sequence, peek, play_sequence, req_stats, pad_caps
 import analogpads
 
 ELEKTRON = bytes([0xF0, 0x00, 0x20, 0x3C])
@@ -533,6 +533,8 @@ class Session:
             say('  second %d: CPU %.1f %%, DSP %.1f %% (peak %.1f %%), heap free %d' % (
                 s['seconds'], 100 * s.get('cpu', 0), 100 * s.get('dsp', 0),
                 100 * s.get('dsp_peak', 0), s['heap_free']))
+            if check_split_text(s):
+                say('  ' + check_split_text(s))
         elif op == 'dump':
             data = peek(self.diag, num(a[0]), num(a[1]))
             with open(self.path(a[2]), 'wb') as fh:

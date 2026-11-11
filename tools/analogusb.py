@@ -173,7 +173,27 @@ def decode_stats(p):
         d['dsp'] = d['render_ticks'] / w
         d['dsp_peak'] = d['render_max'] / period
         d['cpu'] = 1 - max(0, d['idle_ticks'] - d['idle_render']) / w
+    # layout 2 (analoghealth with CHECK_SPLIT, for core-ar2's voice skip): renders that made the
+    # skip's checked call timed apart from the others
+    if d['layout'] >= 2 and len(p) >= off + 2 * ORDERS + 16:
+        ct, cm, cn, um = struct.unpack_from('>IIII', p, off + 2 * ORDERS)
+        d.update(check_ticks=ct, check_max=cm, check_renders=cn, other_max=um)
+        if w and n:
+            d['check_peak'] = cm / period
+            d['other_peak'] = um / period
+            d['check_mean'] = ct / cn / period if cn else None
+            d['other_mean'] = (d['render_ticks'] - ct) / (n - cn) / period if n > cn else None
     return d
+
+
+def check_split_text(s):
+    """'' or the layout-2 split as one line: renders with the checked call, and the others"""
+    if 'check_peak' not in s:
+        return ''
+    pct = lambda v: '-' if v is None else '%.1f %%' % (100 * v)
+    return 'checked %d: mean %s, peak %s; other %d: mean %s, peak %s' % (
+        s['check_renders'], pct(s['check_mean']), pct(s['check_peak']),
+        s['renders'] - s['check_renders'], pct(s['other_mean']), pct(s['other_peak']))
 
 
 def decode_caps(p):
@@ -589,6 +609,8 @@ def show_stats(s):
               % (100 * s['cpu'], 100 * s['dsp'], 100 * s['dsp_peak']))
         print('  %d renders in %d counter ticks: counter %.3f MHz'
               % (s['renders'], s['window'], s['counter_hz'] / 1e6))
+        if check_split_text(s):
+            print('  ' + check_split_text(s))
     else:
         print('  no renders this second (audio stopped, or the counter is not running)')
     blocks = ', '.join('%d:%d' % (o, n) for o, n in enumerate(s['free_blocks']) if n)
