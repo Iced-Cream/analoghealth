@@ -12,7 +12,11 @@
         .equ PAGE_S,      2             | seconds per readout page
 
         | The USB snapshot (the STATS reply, byte for byte; tools/digiusb.py)
+        .ifdef  CHECK_SPLIT
+        .equ SNAP_LAYOUT, 2
+        .else
         .equ SNAP_LAYOUT, 1
+        .endif
         .equ S_HEAD,      0             | u16 layout, u16 flags (1 valid, 2 overlay on)
         .equ S_SECONDS,   4             | snapshots taken since boot
         .equ S_WINDOW,    8             | DTIM0 ticks in the last window
@@ -27,7 +31,17 @@
         .equ S_SMP,       44            | sample pool bytes free
         .equ S_BLOCKS,    48            | u16 free blocks per order, ORDERS of them
         .equ ORDERS,      24
+        .ifdef  CHECK_SPLIT             | core-ar2 sets core_check_mark[0] in a
+                                        | block that makes the voice skip's checked
+                                        | call; layout 2 adds those blocks apart
+        .equ S_CTICKS,    96            | ticks spent in blocks with a check
+        .equ S_CMAX,      100           | the longest of them
+        .equ S_CCNT,      104           | blocks with a check
+        .equ S_UMAX,      108           | the longest block without a check
+        .equ SNAP_BYTES,  112
+        .else
         .equ SNAP_BYTES,  96
+        .endif
 
         .section .run, "ax"
 
@@ -184,7 +198,23 @@ si_render_out:
         cmp.l   r_max, %d0
         bls.s   1f
         move.l  %d0, r_max
-1:      move.l  CUR_TCB, %d1
+1:
+        .ifdef  CHECK_SPLIT
+        tst.l   core_check_mark         | this block made a checked call
+        beq.s   3f
+        clr.l   core_check_mark
+        add.l   %d0, c_acc
+        addq.l  #1, c_cnt
+        cmp.l   c_max, %d0
+        bls.s   4f
+        move.l  %d0, c_max
+        bra.s   4f
+3:      cmp.l   u_max, %d0
+        bls.s   4f
+        move.l  %d0, u_max
+4:
+        .endif
+        move.l  CUR_TCB, %d1
         cmpi.l  #IDLE_TCB, %d1
         bne.s   2f
         add.l   %d0, r_idle             | render time taken out of idle time
@@ -256,6 +286,18 @@ stats:
         move.l  %d1, r_cnt
         move.l  %d1, i_acc
         move.l  %d1, r_idle
+        .ifdef  CHECK_SPLIT
+        lea     c_acc, %a1              | c_acc, c_max, c_cnt, u_max: taken
+        lea     stage+S_CTICKS, %a0     | into the snapshot, then cleared
+        move.l  (%a1), (%a0)+
+        move.l  %d1, (%a1)+
+        move.l  (%a1), (%a0)+
+        move.l  %d1, (%a1)+
+        move.l  (%a1), (%a0)+
+        move.l  %d1, (%a1)+
+        move.l  (%a1), (%a0)+
+        move.l  %d1, (%a1)+
+        .endif
         move.w  %d7, %sr
         lea     stage+S_RTICKS, %a0     | render ticks, longest, count, idle,
         movem.l %d2-%d6, (%a0)          | idle inside renders
@@ -829,6 +871,12 @@ r_max:      .skip 4
 r_cnt:      .skip 4
 r_idle:     .skip 4
 i_acc:      .skip 4
+        .ifdef  CHECK_SPLIT
+c_acc:      .skip 4
+c_max:      .skip 4
+c_cnt:      .skip 4
+u_max:      .skip 4
+        .endif
 i_start:    .skip 4
 i_on:       .skip 4
 v_valid:    .skip 4

@@ -29,6 +29,7 @@
   "KEY_CLOCK": "0xfc07000c",
   "KEY_STACK": "76",
   "RK_KEYS": "1",
+  "CHECK_SPLIT": "1",
   "KEY_TABLE": "0x40285970",
   "ENC_INPUT": "0x40082036",
   "PANEL_CONTINUE": "0x400820f8",
