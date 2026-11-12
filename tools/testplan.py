@@ -39,10 +39,12 @@ list of analogrun steps (see analogrun.py) or audio steps:
 A step whose name ends in "(hardware)" (audio over ASIO, say) is skipped in an
 emulator run. Steps run in order and stop at the first failure (the rest are
 skipped). Steps whose name starts with "on fail" (`[on fail: hang readout]`)
-come last and run only after a failure, at once: read-only steps (dump, stats,
-ping, shot, wait, say) that record the unit's state while it is as the failure
-left it. Each of their lines runs even when an earlier one fails; they never
-change the verdict (result `readout`), and are skipped when nothing failed. A `wait N` straight before an `expect-screen` is folded into the check, which then
+come last and run only after a failure, at once: read-only steps (dump,
+peek-set, stats, ping, shot, wait, say) that record the unit's state while it
+is as the failure left it. Each of their lines runs even when an earlier one
+fails; they never change the verdict (result `readout`), and are skipped when
+nothing failed.
+A `wait N` straight before an `expect-screen` is folded into the check, which then
 polls for up to N plus its own seconds and passes once the screen matches and holds (not
 while recording references).
 Everything goes to a run folder (log.txt, screenshots, recordings,
@@ -109,7 +111,7 @@ def is_plan(path):
 
 
 ON_FAIL = re.compile(r'^on fail\b', re.I)
-READOUT_OPS = ('dump', 'stats', 'ping', 'shot', 'wait', 'say')
+READOUT_OPS = ('dump', 'peek-set', 'stats', 'ping', 'shot', 'wait', 'say')
 
 
 def on_fail(name):
