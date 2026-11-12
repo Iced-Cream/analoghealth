@@ -598,6 +598,51 @@ class PlanTest(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertIn('first failure, keys: AssertionError: asked to', out)
 
+    def fake_runner(self):
+        fake = Path(self.tmp.name, 'fake')
+        fake.mkdir(exist_ok=True)
+        (fake / 'digirun.py').write_text(
+            'import os\n'
+            'def open_port(name):\n'
+            '    return type("P", (), {"close": lambda self: None, "name": name})()\n'
+            'class Session:\n'
+            '    def __init__(self, port, out):\n'
+            '        self.port, self.out = port, out\n'
+            '    def step(self, line):\n'
+            '        with open(os.path.join(self.out, "steps.txt"), "a") as fh:\n'
+            '            fh.write(line + "\\n")\n'
+            '        if line.startswith("fail") or line == "shot broken.png":\n'
+            '            raise TimeoutError("asked to")\n'
+            '    def close(self):\n'
+            '        pass\n')
+        return 'name = of\nunit = digitone\nemulator = yes\nport = tcp:127.0.0.1:7311\ndigirun = fake\n'
+
+    def test_on_fail_runs_only_after_a_failure(self):
+        head = self.fake_runner()
+        tail = '[on fail: readout]\ndump 0x40000000 4 a.bin\nshot broken.png\nstats\n'
+        rc, out = self.run_plan(head + '[a]\nwait 0\n[b]\nfail now\n[c]\ntap NO\n' + tail, quiet=False)
+        self.assertEqual(rc, 1, out)
+        self.assertIn('first failure, b: TimeoutError: asked to', out)     # the verdict is the failure's
+        run = sorted(Path(self.tmp.name, 'runs').iterdir())[-1]
+        # c is skipped; every readout line runs, the broken shot too, and the one after it
+        self.assertEqual((run / 'steps.txt').read_text().splitlines(),
+                         ['wait 0', 'fail now', 'dump 0x40000000 4 a.bin', 'shot broken.png', 'stats'])
+        steps = {s['step']: s for s in json.loads((run / 'summary.json').read_text())['steps']}
+        self.assertEqual(steps['c']['result'], 'skip')
+        self.assertEqual(steps['on fail: readout']['result'], 'readout')
+        self.assertIn('2 of 3 step(s) done; shot: TimeoutError', steps['on fail: readout']['detail'])
+        rc, out = self.run_plan(head + '[a]\nwait 0\n' + tail, quiet=False)
+        self.assertEqual(rc, 0, out)                                       # nothing failed: skipped
+        run = sorted(Path(self.tmp.name, 'runs').iterdir())[-1]
+        self.assertEqual((run / 'steps.txt').read_text().splitlines(), ['wait 0'])
+
+    def test_on_fail_is_last_and_reads_only(self):
+        with self.assertRaisesRegex(ValueError, r'comes after an \[on fail\] section'):
+            self.testplan.parse(self.plan('[a]\nwait 0\n[on fail]\nstats\n[b]\nwait 0\n'))
+        with self.assertRaisesRegex(ValueError, r"has 'tap': an \[on fail\] section reads only"):
+            self.testplan.parse(self.plan('[a]\nwait 0\n[on fail: x]\ntap NO\n'))
+        self.assertEqual(len(self.testplan.parse(self.plan('[a]\nwait 0\n[On fail]\nping\n'))[1]), 2)
+
     def test_din_plan(self):
         din = FakeDin()
         analogrun.open_port = ports(self.unit, din)       # setUp's cleanup puts it back

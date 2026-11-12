@@ -38,7 +38,11 @@ list of analogrun steps (see analogrun.py) or audio steps:
 
 A step whose name ends in "(hardware)" (audio over ASIO, say) is skipped in an
 emulator run. Steps run in order and stop at the first failure (the rest are
-skipped). A `wait N` straight before an `expect-screen` is folded into the check, which then
+skipped). Steps whose name starts with "on fail" (`[on fail: hang readout]`)
+come last and run only after a failure, at once: read-only steps (dump, stats,
+ping, shot, wait, say) that record the unit's state while it is as the failure
+left it. Each of their lines runs even when an earlier one fails; they never
+change the verdict (result `readout`), and are skipped when nothing failed. A `wait N` straight before an `expect-screen` is folded into the check, which then
 polls for up to N plus its own seconds and passes once the screen matches and holds (not
 while recording references).
 Everything goes to a run folder (log.txt, screenshots, recordings,
@@ -104,6 +108,31 @@ def is_plan(path):
     return any(l.startswith('[') and l.endswith(']') or re.match(r'include\s*=', l) for l in lines)
 
 
+ON_FAIL = re.compile(r'^on fail\b', re.I)
+READOUT_OPS = ('dump', 'stats', 'ping', 'shot', 'wait', 'say')
+
+
+def on_fail(name):
+    """An [on fail ...] section: run only after a failure, read-only."""
+    return bool(ON_FAIL.match(name))
+
+
+def check_on_fail(path, steps):
+    """[on fail] sections come after every other section and hold read-only steps only."""
+    seen = False
+    for name, lines in steps:
+        if not on_fail(name):
+            if seen:
+                raise ValueError('%s: [%s] comes after an [on fail] section: those come last' % (path, name))
+            continue
+        seen = True
+        for line in lines:
+            w = shlex.split(line, comments=True)
+            if w and w[0].lower() not in READOUT_OPS:
+                raise ValueError('%s: [%s] has %r: an [on fail] section reads only (%s)'
+                                 % (path, name, w[0], ', '.join(READOUT_OPS)))
+
+
 def parse(path):
     settings, steps = {}, []
     with open(path, encoding='utf-8') as fh:
@@ -130,6 +159,7 @@ def parse(path):
         steps = steps or inc_steps
     if not steps:
         raise ValueError('%s: no [step] sections' % path)
+    check_on_fail(path, steps)
     return settings, steps
 
 
@@ -185,7 +215,7 @@ class Plan:
                                                   'emu' if self.emulator else self.unit, stamp))
         os.makedirs(self.run_dir, exist_ok=True)
         self.log = open(os.path.join(self.run_dir, 'log.txt'), 'a', encoding='utf-8')
-        self.results = []                # (step, 'ok' | 'FAIL' | 'skip', detail)
+        self.results = []                # (step, 'ok' | 'FAIL' | 'skip' | 'readout', detail)
         self.claimed = False
 
     def rel(self, p):
@@ -338,6 +368,12 @@ class Plan:
             session.record_refs = self.emulator and self.settings.get('record-refs', 'no') == 'yes'
             failed = False
             for name, lines in self.steps:
+                if on_fail(name):
+                    if failed:
+                        self.readout(session, name, lines)
+                    else:
+                        self.results.append((name, 'skip', 'nothing failed'))
+                    continue
                 if failed or (self.emulator and name.endswith('(hardware)')):
                     self.results.append((name, 'skip', ''))
                     continue
@@ -377,6 +413,20 @@ class Plan:
             if hasattr(runner, 'OUT'):
                 runner.OUT = None
         return self.finish(t0, digest)
+
+    def readout(self, session, name, lines):
+        """An [on fail] section after a failure: every line, whatever the one before did."""
+        self.note('[%s] (after the failure)' % name)
+        errors = []
+        for line in lines:
+            self.note('  ' + line)
+            try:
+                session.step(line)
+            except Exception as e:           # noqa: BLE001 - recorded, the next line still runs
+                self.note('    failed: %s: %s' % (type(e).__name__, e))
+                errors.append('%s: %s: %s' % (line.split()[0], type(e).__name__, e))
+        self.results.append((name, 'readout', '%d of %d step(s) done%s' % (
+            len(lines) - len(errors), len(lines), '; ' + '; '.join(errors) if errors else '')))
 
     def finish(self, t0, digest):
         ok = all(r[1] != 'FAIL' for r in self.results) and any(r[1] == 'ok' for r in self.results)
