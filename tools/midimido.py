@@ -7,17 +7,19 @@ import shortmsg
 
 
 class Port:
-    def __new__(cls, name=None, short=False):
+    def __new__(cls, name=None, short=False, realtime=False):
         import midisock
         if midisock.is_address(name):           # an emulator over TCP: no MIDI ports
-            return midisock.Port(name, short=short)
+            return midisock.Port(name, short=short, realtime=realtime)
         return super().__new__(cls)
 
-    def __init__(self, name=None, short=False):
+    def __init__(self, name=None, short=False, realtime=False):
         import mido
         self.mido = mido
         # short=True also keeps notes, CCs and NRPNs (not real time), for take_short()
         self.keeps_short = short
+        # realtime=True (with short) keeps real-time bytes F8-FF too, each a one-byte message
+        self.keeps_realtime = short and realtime
         self.shorts = collections.deque(maxlen=20000)
         # NAME is part of both port names, or 'IN,OUT' names them apart.
         pair = [p.strip() for p in name.lower().split(',', 1)] if name and ',' in name else None
@@ -55,7 +57,7 @@ class Port:
                     messages.append(bytes(message.bytes()))
                 elif self.keeps_short:
                     m = bytes(message.bytes())
-                    if m and m[0] < 0xF8:
+                    if m and (m[0] < 0xF8 or self.keeps_realtime):
                         self.shorts.append(shortmsg.stamp(m))
             if until and until(messages):
                 break

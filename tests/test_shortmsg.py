@@ -54,6 +54,17 @@ class ParserTest(unittest.TestCase):
         self.assertEqual(shortmsg.from_word(0x7F3EB1), b'\xB1\x3E\x7F')
         self.assertEqual(shortmsg.from_word(0x05C3), b'\xC3\x05')
         self.assertIsNone(shortmsg.from_word(0xF8))
+        self.assertEqual(shortmsg.from_word(0xFA, realtime=True), b'\xFA')
+        self.assertEqual(shortmsg.from_word(0x7F3EB1, realtime=True), b'\xB1\x3E\x7F')
+
+    def test_real_time_kept_when_asked(self):
+        p, out = shortmsg.Parser(realtime=True), []
+        for b in bytes([0xB0, 99, 0xF8, 0, 0xFA, 0xFB, 98, 0xFC, 0x40]):
+            m = p.feed(b)
+            if m:
+                out.append(m)
+        # real time comes out where it fell, without breaking the CC around it
+        self.assertEqual(out, [b'\xF8', b'\xB0\x63\x00', b'\xFA', b'\xFB', b'\xFC', b'\xB0\x62\x40'])
 
 
 class NrpnTest(unittest.TestCase):
@@ -74,20 +85,43 @@ class NrpnTest(unittest.TestCase):
         self.assertTrue(shortmsg.matches(m('cc=5:20:64'), msgs))
         self.assertFalse(shortmsg.matches(m('cc=5:21'), msgs))
         self.assertIsNone(m('any'))
-        for bad in ('nrpn=1:2', 'cc=17:1', 'cc=x:1', 'nrpn=1:2:3:4:5'):
+        for bad in ('nrpn=1:2', 'cc=17:1', 'cc=x:1', 'nrpn=1:2:3:4:5', 'rt=F7', 'rt=x', 'rt=100'):
             with self.assertRaises(ValueError):
                 m(bad)
+
+    def test_real_time_matchers_and_modes(self):
+        m = shortmsg.parse_matcher
+        msgs = [b'\xF8', b'\xFA', b'\xB0\x14\x40', b'\xFC']
+        self.assertEqual(m('rt=fa'), ('rt', (0xFA,)))
+        self.assertTrue(shortmsg.matches(m('rt=FA'), msgs))
+        self.assertTrue(shortmsg.matches(m('rt=0xFC'), msgs))
+        self.assertFalse(shortmsg.matches(m('rt=FB'), msgs))
+        mode = shortmsg.realtime_mode
+        self.assertIsNone(mode(['short', 'any']))
+        self.assertEqual(mode(['realtime']), 'all')
+        self.assertEqual(mode(['REALTIME=noclock', 'rt=FA'], [m('rt=FA')]), 'noclock')
+        self.assertEqual(mode(['rt=FA'], [m('rt=FA')]), 'all')
+        with self.assertRaises(ValueError):
+            mode(['realtime=clock'])
+        with self.assertRaises(ValueError):
+            mode(['realtime=noclock', 'rt=F8'], [m('rt=F8')])
+        st = [(0, b) for b in msgs]
+        self.assertEqual([b for _, b in shortmsg.filter_realtime(st, None)], [b'\xB0\x14\x40'])
+        self.assertEqual([b for _, b in shortmsg.filter_realtime(st, 'noclock')],
+                         [b'\xFA', b'\xB0\x14\x40', b'\xFC'])
+        self.assertEqual(shortmsg.filter_realtime(st, 'all'), st)
+        self.assertIn('start', shortmsg.text([(0.0, b'\xFA')]))
 
 
 class MidisockTest(unittest.TestCase):
     """A real socket in place of analog-emu's --usb-midi-tcp server."""
 
-    def serve(self, short):
+    def serve(self, short, realtime=False):
         srv = socket.socket()
         srv.bind(('127.0.0.1', 0))
         srv.listen(1)
         self.addCleanup(srv.close)
-        port = midisock.Port('tcp:127.0.0.1:%d' % srv.getsockname()[1], short=short)
+        port = midisock.Port('tcp:127.0.0.1:%d' % srv.getsockname()[1], short=short, realtime=realtime)
         self.addCleanup(port.close)
         conn, _ = srv.accept()
         self.addCleanup(conn.close)
@@ -107,11 +141,21 @@ class MidisockTest(unittest.TestCase):
                              if short else [])
             self.assertEqual(port.take_short(), [])
 
+    def test_real_time_kept_apart_when_asked(self):
+        stream = (b'\xFA\xB0\x63\x00' + KIT[0][:5] + b'\xF8' + KIT[0][5:] + b'\xFC\xF0\x7E\xF7')
+        port, conn = self.serve(True, realtime=True)
+        conn.sendall(stream)
+        got = port.receive(1.0, until=lambda m: len(m) >= 2)
+        # with real time asked for, the clock inside the SysEx is taken out of it (as winmm does)
+        self.assertEqual(got, [KIT[0], b'\xF0\x7E\xF7'])
+        self.assertEqual([m for _, m in port.take_short()], [b'\xFA', b'\xB0\x63\x00', b'\xF8', b'\xFC'])
+
 
 class ShortPort(FakeUnit):
     """The fake unit, opened to keep short messages: `emit` queues them as the unit
     would send them (a knob turned, say)."""
     keeps_short = True
+    keeps_realtime = False
 
     def __init__(self):
         super().__init__()
@@ -161,6 +205,28 @@ class CaptureStepTest(unittest.TestCase):
         self.s.step('capture reply.syx 0.1 any')
         self.assertEqual(analogrun.load_syx(Path(self.tmp.name, 'reply.syx')), KIT)
 
+    def test_capture_real_time(self):
+        self.unit.keeps_realtime = True
+        self.s.step('capture first.txt 0.05 short')
+        self.unit.emit([b'\xF8', b'\xFA', b'\xF8', b'\xB0\x14\x40', b'\xFC'])
+        self.s.step('capture t.txt 0.1 any rt=FA rt=FC realtime=noclock')
+        text = Path(self.tmp.name, 't.txt').read_text()
+        self.assertIn('FA', text)
+        self.assertIn('stop', text)
+        self.assertNotIn('F8', text)
+        self.unit.emit([b'\xF8', b'\xFB'])
+        self.s.step('capture c.txt 0.1 any short realtime rt=FB rt=F8')
+        self.assertIn('clock', Path(self.tmp.name, 'c.txt').read_text())
+        self.unit.emit([b'\xFA', b'\xF8'])
+        self.s.step('capture plain.txt 0.1 none short')      # no realtime: as it always was
+        self.unit.emit([b'\xF8'])
+        with self.assertRaisesRegex(AssertionError, 'rt=FA'):
+            self.s.step('capture miss.txt 0.05 rt=FA')
+
+    def test_real_time_needs_a_port_that_keeps_it(self):
+        with self.assertRaisesRegex(ValueError, 'without real-time bytes'):
+            self.s.step('capture a.txt 0.05 short realtime')
+
     def test_a_port_without_short_refuses(self):
         s = analogrun.Session(FakeUnit(), self.tmp.name)
         with self.assertRaisesRegex(ValueError, 'without short messages'):
@@ -183,6 +249,12 @@ class OpenTest(unittest.TestCase):
         self.assertFalse(analogrun.wants_short('capture short 2'))   # a file named short
         self.assertTrue(testplan.uses_short([('a', ['capture k.txt 1 short'])]))
         self.assertFalse(testplan.uses_short([('a', ['capture k.syx 1 any din'])]))
+        self.assertTrue(analogrun.wants_short('capture k.txt 2 any rt=FA'))
+        self.assertTrue(analogrun.wants_realtime('capture k.txt 2 short realtime=noclock din'))
+        self.assertFalse(analogrun.wants_realtime('capture k.txt 2 short'))
+        self.assertTrue(testplan.uses_short([('a', ['capture k.txt 1 rt=FC'])]))
+        self.assertTrue(testplan.uses_realtime([('a', ['capture k.txt 1 short realtime'])]))
+        self.assertFalse(testplan.uses_realtime([('a', ['capture k.txt 1 short'])]))
 
     def test_do_opens_short_only_when_asked(self):
         opened = []
@@ -195,7 +267,9 @@ class OpenTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             self.assertEqual(analogrun.main(['--quiet', 'do', 'wait 0', '--out', d]), 0)
             self.assertEqual(analogrun.main(['--quiet', 'do', 'capture a.txt 0.05 short', '--out', d]), 0)
-        self.assertEqual(opened, [{}, {'short': True}])
+            self.assertEqual(analogrun.main(['--quiet', 'do', 'capture a.txt 0.05 short realtime',
+                                             '--out', d]), 1)    # ShortPort here keeps no real time
+        self.assertEqual(opened, [{}, {'short': True}, {'short': True, 'realtime': True}])
 
 
 if __name__ == '__main__':

@@ -108,12 +108,20 @@ def uses_din(steps):
 
 
 def uses_short(steps):
-    """Whether any capture step reads short messages (short, nrpn=, cc=)."""
+    """Whether any capture step reads short messages (short, nrpn=, cc=, rt=, realtime)."""
+    return _capture_uses(steps, lambda x: x == 'short' or x.startswith(('nrpn=', 'cc=', 'rt=', 'realtime')))
+
+
+def uses_realtime(steps):
+    """Whether any capture step keeps real-time bytes (realtime[=noclock], rt=)."""
+    return _capture_uses(steps, lambda x: x.startswith(('rt=', 'realtime')))
+
+
+def _capture_uses(steps, word):
     for _, lines in steps:
         for l in lines:
             w = shlex.split(l, comments=True)
-            if w and w[0].lower() == 'capture' and any(
-                    x.lower() == 'short' or x.lower().startswith(('nrpn=', 'cc=')) for x in w[2:]):
+            if w and w[0].lower() == 'capture' and any(word(x.lower()) for x in w[2:]):
                 return True
     return False
 
@@ -424,7 +432,10 @@ class Plan:
                     return self.finish(t0, digest)
             # short messages (capture ... short) only when a step asks: else the ports open as before
             short = uses_short(self.steps) and hasattr(runner, 'wants_short')
-            opener = (lambda name: runner.open_port(name, short=True)) if short else runner.open_port
+            # real-time bytes too (capture ... realtime / rt=) only with a runner that has them
+            realtime = short and uses_realtime(self.steps) and hasattr(runner, 'wants_realtime')
+            opener = ((lambda name: runner.open_port(name, short=True, realtime=True)) if realtime else
+                      (lambda name: runner.open_port(name, short=True)) if short else runner.open_port)
             port = opener(self.port)
             try:
                 din = opener(self.din) if self.din else None

@@ -84,6 +84,12 @@ Steps (one per line or separated by ';'; '#' starts a comment):
                           value, CC 6 << 7 | CC 38 when a CC 38 follows, else CC 6).
                           The ports are opened to keep short messages only when a step
                           asks for them, so SysEx-only runs read them as before
+    capture FILE.txt S [any|none] short realtime[=noclock] [rt=XX].. [din]
+                          the same, keeping real-time bytes too (F8 clock, FA start,
+                          FB continue, FC stop, FE, FF), one per line; realtime=noclock
+                          keeps all of them but clock F8; each rt=XX (hex F8-FF, implies
+                          short and realtime) stops the run unless that byte came. The
+                          ports keep real-time bytes only when a step asks for them
     ping                  the unit's product, name and OS version (RPC Ping, read-only)
     save-project N NAME SEQ  key-driven SAVE PROJECT into slot N (keys SEQ, ending on the
                           save), checked, then renamed NAME; slot N must be empty (a
@@ -549,7 +555,8 @@ class Session:
             # capture FILE S [any|none] [din]: the replies to a send, or the silence, as evidence
             tap, a = self.leg(a, 2)
             matchers = [m for m in map(shortmsg.parse_matcher, a[2:]) if m]
-            short = bool(matchers) or any(w.lower() == 'short' for w in a[2:])
+            short = bool(matchers) or any(w.lower() == 'short' or w.lower().startswith('realtime')
+                                          for w in a[2:])
             if short:
                 self.capture_short(tap, a, matchers)
                 return
@@ -631,14 +638,19 @@ class Session:
     def capture_short(self, tap, a, matchers):
         """capture FILE S [any|none] short [nrpn=..] [cc=..]: the short messages since the last
         send (or this step), saved as text, then the checks."""
-        rest = [w for w in a[2:] if w.lower() != 'short' and not shortmsg.parse_matcher(w)]
+        rt = shortmsg.realtime_mode(a[2:], matchers)
+        rest = [w for w in a[2:] if w.lower() != 'short' and not w.lower().startswith('realtime')
+                and not shortmsg.parse_matcher(w)]
         want = rest[0].lower() if rest else None
         if want not in (None, 'any', 'none') or len(rest) > 1:
-            raise ValueError('capture FILE S [any|none] short [nrpn=CH:MSB:LSB[:VAL]] '
-                             '[cc=CH:NUM[:VAL]] [din]')
+            raise ValueError('capture FILE S [any|none] short [realtime[=noclock]] [nrpn=CH:MSB:LSB[:VAL]] '
+                             '[cc=CH:NUM[:VAL]] [rt=XX] [din]')
         if not tap.short:
             raise ValueError('capture ... short: this port was opened without short messages '
                              '(analogrun opens it so when a step has short, nrpn= or cc=)')
+        if rt and not getattr(tap.port, 'keeps_realtime', False):
+            raise ValueError('capture ... realtime: this port was opened without real-time bytes '
+                             '(analogrun opens it so when a step has realtime or rt=)')
         start = time.monotonic()
         if tap.since_short is None:
             tap.listen_short()
@@ -646,12 +658,17 @@ class Session:
         while time.monotonic() < end:
             tap.receive(min(0.05, max(end - time.monotonic(), 0)))
         got, tap.since_short = tap.since_short, []    # the next capture keeps only what comes after
+        got = shortmsg.filter_realtime(got, rt)       # only the real-time bytes this step asked for
         msgs = [m for _, m in got]
         with open(self.path(a[0]), 'w', encoding='utf-8') as fh:
             fh.write(shortmsg.text(got, start))
         found = shortmsg.nrpns(msgs)
-        say('  captured %d short messages, %d NRPN values%s' % (
-            len(msgs), len(found), ' over DIN' if tap is self.din else ''))
+        rts = [m[0] for m in msgs if len(m) == 1 and m[0] >= 0xF8]
+        say('  captured %d short messages, %d NRPN values%s%s' % (
+            len(msgs), len(found),
+            ', real time: %s' % (', '.join('%s x%d' % (shortmsg.REALTIME[b], rts.count(b))
+                                           for b in sorted(set(rts))) or 'none') if rt else '',
+            ' over DIN' if tap is self.din else ''))
         if want == 'any' and not msgs:
             raise AssertionError('no short message came within %s s' % a[1])
         if want == 'none' and msgs:
@@ -660,9 +677,12 @@ class Session:
         missing = [m for m in matchers if not shortmsg.matches(m, msgs)]
         if missing:
             seen = sorted({'%d:%d:%d' % f[:3] for f in found})
-            raise AssertionError('no %s came within %s s (NRPNs seen: %s; saved in %s)' % (
-                ', '.join('%s=%s' % (k, ':'.join(map(str, n))) for k, n in missing), a[1],
-                ', '.join(seen) or 'none', os.path.basename(a[0])))
+            raise AssertionError('no %s came within %s s (NRPNs seen: %s%s; saved in %s)' % (
+                ', '.join('rt=%02X' % n[0] if k == 'rt' else '%s=%s' % (k, ':'.join(map(str, n)))
+                          for k, n in missing), a[1],
+                ', '.join(seen) or 'none',
+                '; real time seen: %s' % (' '.join('%02X' % b for b in sorted(set(rts))) or 'none')
+                if rt else '', os.path.basename(a[0])))
 
     def run(self, text):
         lines = [s for line in text.splitlines() for s in line.split(';')]
@@ -765,26 +785,37 @@ def diff_png(w, h, diff):
     return elkrpc.Screen(w, h, pixels).png(4)
 
 
-def open_port(name='Analog Rytm', short=False):
+def open_port(name='Analog Rytm', short=False, realtime=False):
     """The unit's (or an interface's) MIDI port; short=True also keeps short messages
-    (notes, CCs, NRPNs) for capture ... short. Without it the port is as it always was."""
+    (notes, CCs, NRPNs) for capture ... short, and realtime=True with it the real-time
+    bytes F8-FF. Without them the port is as it always was."""
     if sys.platform == 'win32':
         from winmidi import Port
     else:
         from midimido import Port
+    if realtime:
+        return Port(name, short=True, realtime=True)
     return Port(name, short=True) if short else Port(name)
 
 
 def wants_short(text):
     """Whether steps text has a capture step that reads short messages."""
+    return _capture_wants(text, lambda x: x == 'short' or x.startswith(('nrpn=', 'cc=', 'rt=', 'realtime')))
+
+
+def wants_realtime(text):
+    """Whether steps text has a capture step that keeps real-time bytes."""
+    return _capture_wants(text, lambda x: x.startswith(('rt=', 'realtime')))
+
+
+def _capture_wants(text, word):
     for line in text.splitlines():
         for part in line.split(';'):
             try:
                 w = shlex.split(part, comments=True)
             except ValueError:
                 continue
-            if w and w[0].lower() == 'capture' and any(
-                    x.lower() == 'short' or x.lower().startswith(('nrpn=', 'cc=')) for x in w[2:]):
+            if w and w[0].lower() == 'capture' and any(word(x.lower()) for x in w[2:]):
                 return True
     return False
 
@@ -894,8 +925,10 @@ def _main(ap, args):
             with open(args.script) as fh:
                 text = fh.read()
     short = bool(text) and wants_short(text)
-    # short messages only when a step asks: else the ports open exactly as before
-    opener = (lambda name: open_port(name, short=True)) if short else open_port
+    realtime = short and wants_realtime(text)
+    # short messages (and real time) only when a step asks: else the ports open exactly as before
+    opener = ((lambda name: open_port(name, short=True, realtime=True)) if realtime else
+              (lambda name: open_port(name, short=True)) if short else open_port)
     port = opener(args.port or 'Analog Rytm')
     try:
         din = opener(args.din) if args.din else None

@@ -20,7 +20,7 @@ def is_address(name):
 
 
 class Port:
-    def __init__(self, address, short=False):
+    def __init__(self, address, short=False, realtime=False):
         host, _, port = address[len(PREFIX):].rpartition(':')
         try:
             self.sock = socket.create_connection((host or '127.0.0.1', int(port)), timeout=5)
@@ -32,8 +32,10 @@ class Port:
         self.msgs, self.partial = [], None
         # short=True also keeps notes, CCs and NRPNs (not real time), for take_short()
         self.keeps_short = short
+        # realtime=True (with short) keeps real-time bytes F8-FF too, each a one-byte message
+        self.keeps_realtime = short and realtime
         self.shorts = collections.deque(maxlen=20000)
-        self.parser = shortmsg.Parser()
+        self.parser = shortmsg.Parser(realtime=self.keeps_realtime)
         self.cond = threading.Condition()
         threading.Thread(target=self._reader, daemon=True).start()
 
@@ -45,7 +47,10 @@ class Port:
                     return
                 with self.cond:
                     for b in chunk:
-                        if b == 0xF0:
+                        if b >= 0xF8 and self.keeps_realtime:
+                            # kept apart even inside a SysEx, as winmm hands it over (MIM_DATA)
+                            self.shorts.append(shortmsg.stamp(bytes([b])))
+                        elif b == 0xF0:
                             self.partial = bytearray([b])
                         elif self.partial is not None:
                             self.partial.append(b)

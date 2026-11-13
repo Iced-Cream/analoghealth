@@ -95,10 +95,10 @@ class Port:
     def __new__(cls, name=None, *args, **kw):
         import midisock
         if midisock.is_address(name):           # an emulator over TCP: no MIDI ports
-            return midisock.Port(name, short=kw.get('short', False))
+            return midisock.Port(name, short=kw.get('short', False), realtime=kw.get('realtime', False))
         return super().__new__(cls)
 
-    def __init__(self, name=None, nbuf=16, size=65536, short=False):
+    def __init__(self, name=None, nbuf=16, size=65536, short=False, realtime=False):
         # a unit that hung on its restart blocks every winmm call to it: never open its port
         stallmark.refuse_if_stalled(name or '')
         i, o = find(name)
@@ -107,6 +107,8 @@ class Port:
         # is opened with one that keeps them for take_short(). SysEx still arrives in the
         # buffers below, polled as without it.
         self.keeps_short = short
+        # realtime=True (with short): MIM_DATA real-time bytes F8-FF are kept too, one byte each
+        self.keeps_realtime = short and realtime
         self.shorts = collections.deque(maxlen=20000)
         self._proc = MIDIINPROC(self._on_input) if short else None    # kept alive with the port
         self.bufs = []
@@ -140,7 +142,7 @@ class Port:
     def _on_input(self, _handle, msg, _instance, p1, _p2):
         # The driver's thread: no winmm calls here, only keep the message.
         if msg == MIM_DATA:
-            m = shortmsg.from_word(p1)
+            m = shortmsg.from_word(p1, self.keeps_realtime)
             if m:
                 self.shorts.append(shortmsg.stamp(m))
 

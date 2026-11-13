@@ -4,6 +4,9 @@ byte stream, decoding NRPNs and the matchers a capture step asserts with.
 
 Ports keep these only when opened with short=True, and leave out real-time bytes
 (clock F8, start/stop, active sensing FE): a unit sending clock would bury the rest.
+Opened with realtime=True as well, they keep the real-time bytes too, each as a one-byte
+message; a capture step asks for them (`realtime`, `realtime=noclock`, `rt=XX`) and
+keeps only what it asked for (filter_realtime).
 """
 import time
 
@@ -15,9 +18,16 @@ def data_len(status):
     return {0xF1: 1, 0xF2: 2, 0xF3: 1, 0xF6: 0}.get(status)
 
 
-def from_word(word):
-    """A winmm MIM_DATA dwParam1 -> the message bytes, or None for real time or junk."""
+REALTIME = {0xF8: 'clock', 0xF9: 'real time F9', 0xFA: 'start', 0xFB: 'continue', 0xFC: 'stop',
+            0xFD: 'real time FD', 0xFE: 'active sensing', 0xFF: 'reset'}
+
+
+def from_word(word, realtime=False):
+    """A winmm MIM_DATA dwParam1 -> the message bytes, or None for junk (and for real time
+    unless `realtime`)."""
     status = word & 0xFF
+    if status >= 0xF8:
+        return bytes([status]) if realtime else None
     n = data_len(status)
     if n is None:
         return None
@@ -28,13 +38,14 @@ class Parser:
     """A raw MIDI byte stream (outside SysEx) -> whole short messages, running status
     expanded. Feed it the bytes a SysEx reader does not take."""
 
-    def __init__(self):
+    def __init__(self, realtime=False):
         self.status, self.buf = None, []
+        self.realtime = realtime
 
     def feed(self, b):
         """One byte -> a whole message (bytes) when it completes one, else None."""
-        if b >= 0xF8:                          # real time: not kept, does not break a message
-            return None
+        if b >= 0xF8:                          # real time: kept only if asked, never breaks a message
+            return bytes([b]) if self.realtime else None
         if b & 0x80:
             n = data_len(b)
             if n is None:                      # F0/F7/F4/F5: ends any running status
@@ -91,6 +102,8 @@ def nrpns(msgs):
 
 
 def describe(m):
+    if len(m) == 1 and m[0] >= 0xF8:
+        return REALTIME[m[0]]
     kind = m[0] & 0xF0
     ch = (m[0] & 0x0F) + 1
     if kind == 0xB0:
@@ -105,12 +118,21 @@ def describe(m):
 
 
 def parse_matcher(word):
-    """`nrpn=CH:MSB:LSB[:VAL]` or `cc=CH:NUM[:VAL]` -> (kind, numbers), or None when the
-    word is neither."""
+    """`nrpn=CH:MSB:LSB[:VAL]`, `cc=CH:NUM[:VAL]` or `rt=XX` (a real-time byte in hex, F8-FF)
+    -> (kind, numbers), or None when the word is none of them."""
     kind, eq, spec = word.partition('=')
     kind = kind.lower()
-    if not eq or kind not in ('nrpn', 'cc'):
+    if not eq or kind not in ('nrpn', 'cc', 'rt'):
         return None
+    if kind == 'rt':
+        try:
+            b = int(spec, 16)
+        except ValueError:
+            b = -1
+        if not 0xF8 <= b <= 0xFF:
+            raise ValueError('%s: give rt=XX, a real-time byte F8-FF in hex (FA start, '
+                             'FB continue, FC stop)' % word)
+        return kind, (b,)
     try:
         nums = [int(x, 0) for x in spec.split(':')]
     except ValueError:
@@ -125,12 +147,41 @@ def parse_matcher(word):
 def matches(matcher, msgs):
     """Whether `msgs` (short messages) hold one that `matcher` (parse_matcher) asks for."""
     kind, want = matcher
+    if kind == 'rt':
+        return bytes(want) in msgs
     if kind == 'nrpn':
         return any((c, a, b) == want[:3] and (len(want) == 3 or v == want[3])
                    for c, a, b, v, _ in nrpns(msgs))
     ch, num = want[0], want[1]
     return any(len(m) == 3 and m[0] == 0xB0 | (ch - 1) and m[1] == num
                and (len(want) == 2 or m[2] == want[2]) for m in msgs)
+
+
+def realtime_mode(words, matchers=()):
+    """A capture step's words -> which real-time bytes it keeps: None (none, as always),
+    'all' (`realtime`, or an rt= matcher) or 'noclock' (`realtime=noclock`: all but clock F8)."""
+    mode = None
+    for w in words:
+        lw = w.lower()
+        if lw == 'realtime':
+            mode = mode or 'all'
+        elif lw == 'realtime=noclock':
+            mode = 'noclock'
+        elif lw.startswith('realtime='):
+            raise ValueError('%s: give realtime or realtime=noclock' % w)
+    if mode is None and any(k == 'rt' for k, _ in matchers):
+        mode = 'all'
+    if mode == 'noclock' and ('rt', (0xF8,)) in matchers:
+        raise ValueError('rt=F8 asks for clock, which realtime=noclock drops')
+    return mode
+
+
+def filter_realtime(stamped, mode):
+    """Stamped messages -> only the real-time ones `mode` (realtime_mode) keeps; the rest stay."""
+    if mode == 'all':
+        return list(stamped)
+    drop = {0xF8} if mode == 'noclock' else set(REALTIME)
+    return [(t, m) for t, m in stamped if not (len(m) == 1 and m[0] in drop)]
 
 
 def text(stamped, since=None):
