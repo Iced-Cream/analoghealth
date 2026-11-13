@@ -13,6 +13,7 @@ from ctypes import wintypes
 
 import midiwatch
 import shortmsg
+import stallmark
 
 winmm = ctypes.WinDLL('winmm')
 OPEN_FACTOR = 2         # opening a port may wait for the MIDI service to set it up
@@ -98,6 +99,8 @@ class Port:
         return super().__new__(cls)
 
     def __init__(self, name=None, nbuf=16, size=65536, short=False):
+        # a unit that hung on its restart blocks every winmm call to it: never open its port
+        stallmark.refuse_if_stalled(name or '')
         i, o = find(name)
         self.hin, self.hout = wintypes.HANDLE(), wintypes.HANDLE()
         # short=True: winmm hands short messages (MIM_DATA) only to a callback, so the input

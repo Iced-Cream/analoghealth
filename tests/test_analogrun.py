@@ -500,6 +500,29 @@ class SessionTest(unittest.TestCase):
             run('clear', '/projects/1', str(backup))
 
 
+class StallMarkTest(unittest.TestCase):
+    def test_port_of_a_stalled_unit_is_refused(self):
+        import stallmark
+        with tempfile.TemporaryDirectory() as d:
+            saved = os.environ.get('ELKLOCK_DIR')
+            os.environ['ELKLOCK_DIR'] = d
+            try:
+                stallmark.refuse_if_stalled('Elektron Analog Four mkII')
+                Path(d, 'a4.stalled.json').write_text(json.dumps({'why': 'test'}))
+                with self.assertRaises(stallmark.Stalled):
+                    stallmark.refuse_if_stalled('Elektron Analog Four mkII')
+                stallmark.refuse_if_stalled('Elektron Analog Rytm MKII')
+                Path(d, 'rytm.stalled.json').write_text(json.dumps({'why': 'test'}))
+                with self.assertRaises(stallmark.Stalled):
+                    stallmark.refuse_if_stalled('Sidecar | Expander (Pi)')
+                stallmark.refuse_if_stalled('tcp:127.0.0.1:7311')
+            finally:
+                if saved is None:
+                    os.environ.pop('ELKLOCK_DIR', None)
+                else:
+                    os.environ['ELKLOCK_DIR'] = saved
+
+
 class PlanTest(unittest.TestCase):
     """analogrun run PLAN against the fake unit: one verdict, a run folder."""
 
@@ -565,6 +588,72 @@ class PlanTest(unittest.TestCase):
                                                      'flash_sha256': 'other'}))
         rc, out = self.run_plan('unit = rytm\nflash = os.syx\nemulator-run = runs/emu-ok\n[boot]\nwait 0\n')
         self.assertIn('flashed a different OS file', out)
+
+    def stall_setup(self, usb_cycle_rc=0):
+        """A fake elkflash whose upgrade stalls (exit 5), and a passing emulator run of the plan."""
+        image = Path(self.tmp.name, 'os.syx')
+        image.write_bytes(b'\xF0\xF7')
+        pkg = Path(self.tmp.name, 'fakeflash', 'elkflash')
+        pkg.mkdir(parents=True)
+        (pkg / '__init__.py').write_text('')
+        (pkg / '__main__.py').write_text(
+            'import sys\n'
+            'with open(__file__ + ".calls", "a") as fh:\n'
+            '    fh.write(" ".join(sys.argv[1:]) + "\\n")\n'
+            'if sys.argv[1] == "upgrade":\n'
+            '    print("stalled: still on USB 45 s after the commit"); sys.exit(5)\n'
+            'if sys.argv[1] == "usb-cycle":\n'
+            '    print("power-cycled: left USB at 3.0 s, back at 8.0 s"); sys.exit(%d)\n'
+            'print("back after 2 s: Analog Four MKII, OS 1.56")\n' % usb_cycle_rc)
+        emu = Path(self.tmp.name, 'runs', 'emu-ok')
+        emu.mkdir(parents=True)
+        (emu / 'summary.json').write_text(json.dumps({'emulator': True, 'pass': True,
+                                                     'flash_sha256': self.testplan.sha256(str(image))}))
+        flag = Path(self.tmp.name, 'listen.json')
+        os.environ['ANALOGRUN_LISTEN_FILE'] = str(flag)
+        self.addCleanup(os.environ.pop, 'ANALOGRUN_LISTEN_FILE', None)
+        said = []
+
+        def person():                        # says "done" once the run asks for the power cycle
+            for _ in range(200):
+                if flag.exists():
+                    said.append(json.loads(flag.read_text()))
+                    flag.unlink()
+                    return
+                time.sleep(0.05)
+        import threading
+        threading.Thread(target=person, daemon=True).start()
+        head = ('name = st\nunit = a4\nport = Analog Four\nflash = os.syx\nemulator-run = runs/emu-ok\n'
+                'elkflash = %s\n' % pkg.parent)
+        return head, said, Path(str(pkg / '__main__.py') + '.calls')
+
+    def test_stalled_flash_takes_the_stall_branch(self):
+        head, said, calls = self.stall_setup()
+        rc, out = self.run_plan(head + '[boot]\nwait 0\n')
+        self.assertEqual(rc, 0, out)
+        self.assertIn('STALL: the flash stalled on its restart (new OS written; no reflash): power cycled', out)
+        self.assertTrue(said and said[0]['power_cycle'])
+        self.assertIn('read its screen', said[0]['what'])
+        ops = [l.split()[0] for l in calls.read_text().splitlines()]
+        self.assertEqual(ops, ['upgrade', 'usb-cycle', 'wait'])          # no second upgrade
+        run = sorted(p for p in Path(self.tmp.name, 'runs').iterdir() if p.name != 'emu-ok')[-1]
+        summary = json.loads((run / 'summary.json').read_text())
+        self.assertEqual(summary['stall']['cycled'], True)
+        self.assertEqual([s['step'] for s in summary['steps']], ['flash', 'stall readback', 'boot'])
+        self.assertTrue((run / 'stall-readback.png').exists() or 'shot' in (run / 'log.txt').read_text())
+
+    def test_stall_not_seen_power_cycled_opens_no_port(self):
+        head, said, calls = self.stall_setup(usb_cycle_rc=5)
+        opened = []
+        analogrun.open_port = lambda *a, **k: opened.append(a) or self.fail('opened a port')
+        rc, out = self.run_plan(head + '[boot]\nwait 0\n')
+        self.assertEqual(rc, 1, out)
+        self.assertIn('not seen power-cycled', out)
+        self.assertIn('first failure, flash: stalled on its restart, new OS written: the power cycle was not '
+                      'seen on USB', out)
+        self.assertEqual(opened, [])
+        ops = [l.split()[0] for l in calls.read_text().splitlines()]
+        self.assertEqual(ops, ['upgrade', 'usb-cycle'])
 
     def test_digitone_plan_runs_digirun_in_its_own_process(self):
         fake = Path(self.tmp.name, 'fake')

@@ -47,6 +47,14 @@ detail. A hardware flash needs `emulator-run`: a passing emulator run of the
 same plan with the same OS file (sha256), so a build reaches a unit only
 after it has passed in the emulator.
 
+A hardware flash that stalls on the unit's restart (elkflash exit 5: the unit hung with
+the new OS written, as stock A4 1.56 can) takes the stall branch, not a failure: no
+reflash and no port opened; the person reads the screen and power cycles the unit by hand
+(asked through ANALOGRUN_LISTEN_FILE as a power-cycle step, or typed "done" here) while
+`elkflash usb-cycle` watches it on USB; then `elkflash wait`, a shot, and stats twice 30 s
+apart when the plan reads stats; then the plan's steps. A power cycle not seen on USB
+fails the flash and keeps the claim (the unit stays marked as stalled in elklock).
+
 A Digitone plan (unit = digitone) runs its steps through digihealth's digirun.py
 instead of analogrun.py (no send or save-* steps there). The two share module
 names (elkrpc, midisock), so such a plan runs in a process of its own:
@@ -65,6 +73,22 @@ import sys
 import time
 
 KEY = re.compile(r'^([a-z][a-z0-9-]*)\s*=\s*(.*)$')
+# elkflash's exit code when the unit hung on its restart after the commit (on USB, never left it,
+# the new OS written; stock A4 1.56 does this). A plan's flash then takes the stall branch: no
+# reflash, no port opened until the unit has been power-cycled by hand (watched on USB by
+# elkflash usb-cycle), then a readback, then the plan's steps.
+STALL_EXIT = 5
+STALL_SEEN_WAIT = 90           # s after the person's "done" for usb-cycle to see the unit back
+STALL_WATCH_LIMIT = 4 * 3600   # s usb-cycle watches at most
+STALL_STATS_GAP = 30           # s between the readback's two stats reads (analoghealth builds)
+STALL_HAND = ('the %s stalled on its restart after the flash: the new OS is written, and nothing can read it '
+              'over MIDI now. First read its screen by eye and note what it shows (expected: SUCCESS! '
+              'REBOOTING) and the time. Then power cycle it by hand: switch it off, wait 10 s, switch it on, '
+              'and let it boot to its start screen. Nothing is reflashed')
+
+
+class FlashStalled(RuntimeError):
+    """elkflash exit 5: the unit hung on its restart; the new OS is written."""
 PORTS = {'rytm': 'Analog Rytm', 'a4': 'Analog Four', 'digitone': 'Digitone'}
 DIGI_UNITS = ('digitone',)               # units whose steps run through digirun.py
 
@@ -187,6 +211,7 @@ class Plan:
         self.log = open(os.path.join(self.run_dir, 'log.txt'), 'a', encoding='utf-8')
         self.results = []                # (step, 'ok' | 'FAIL' | 'skip', detail)
         self.claimed = False
+        self.stall = None                # the flash's stall branch: {'flash', 'cycled'}
 
     def rel(self, p):
         return p if os.path.isabs(p) else os.path.join(self.here, p)
@@ -230,9 +255,69 @@ class Plan:
         if lock and not self.emulator:
             cmd = shlex.split(lock, posix=False) + ['run', self.unit, '--'] + cmd
         rc, last = self.call(cmd, cwd=g('elkflash'), timeout=900)
+        if rc == STALL_EXIT and not self.emulator:
+            raise FlashStalled(digest, last)
         if rc:
             raise RuntimeError('flash failed: ' + last)
         return digest, last
+
+    def under_lock(self, cmd):
+        lock = self.settings.get('lock')
+        if lock and not self.emulator:
+            return shlex.split(lock, posix=False) + ['run', self.unit, '--'] + cmd
+        return cmd
+
+    def stall_branch(self):
+        """The flash stalled: the person reads the screen and power cycles the unit by hand while
+        elkflash usb-cycle watches it on USB (nothing opens its port), then elkflash wait reads
+        it back (it answers, and on which OS). -> that line. Raises when the power cycle was not
+        seen or the unit does not answer after it; the unit then stays marked as stalled."""
+        g = self.settings.get
+        stop = os.path.join(self.run_dir, 'usb-cycle.stop')
+        wlog = os.path.join(self.run_dir, 'usb-cycle.log')
+        watch = self.under_lock([sys.executable, '-m', 'elkflash', 'usb-cycle', '--port', self.port,
+                                 '--timeout-total', str(STALL_WATCH_LIMIT), '--stop-file', stop])
+        self.note('$ ' + ' '.join(watch))
+        with open(wlog, 'w', encoding='utf-8') as fh:
+            w = subprocess.Popen(watch, cwd=g('elkflash'), stdout=fh, stderr=subprocess.STDOUT)
+        what = STALL_HAND % self.unit
+        flag = os.environ.get('ANALOGRUN_LISTEN_FILE')
+        if flag:
+            # the host (elkbench) asks the person, as at a power-cycle step, and removes the file
+            # once they have said it is done
+            with open(flag, 'w', encoding='utf-8') as fh:
+                json.dump({'what': what, 'since': time.time(), 'power_cycle': True}, fh)
+            while os.path.exists(flag) and (w.poll() is None or w.returncode == 0):
+                time.sleep(0.5)
+            said_done = not os.path.exists(flag)
+            if not said_done:
+                os.remove(flag)
+        else:
+            print('STALL: ' + what + '.', file=self.stdout)
+            while input('  type done when it is on its start screen: ').strip().lower() != 'done':
+                pass
+            said_done = True
+        if said_done:
+            deadline = time.monotonic() + STALL_SEEN_WAIT
+            while w.poll() is None and time.monotonic() < deadline:
+                time.sleep(0.5)
+        if w.poll() is None:
+            open(stop, 'w').close()
+            try:
+                w.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                pass
+        with open(wlog, encoding='utf-8', errors='replace') as fh:
+            said = [l.strip() for l in fh.read().splitlines() if l.strip()]
+        self.note('\n'.join(said))
+        if w.returncode != 0:
+            raise RuntimeError('the power cycle was not seen on USB (usb-cycle exit %s: %s); the unit stays '
+                               'marked as stalled and the claim is kept' % (w.returncode, said[-1] if said else ''))
+        rc, last = self.call(self.under_lock([sys.executable, '-m', 'elkflash', 'wait', '--port', self.port,
+                                              '--timeout-total', '90']), cwd=g('elkflash'), timeout=300)
+        if rc:
+            raise RuntimeError('it does not answer after the power cycle: ' + last)
+        return last
 
     def emulator_gate(self, digest):
         run = self.settings.get('emulator-run')
@@ -316,10 +401,24 @@ class Plan:
                 self.results.append(('claim', 'FAIL', last))
                 return self.finish(t0, digest)
             self.claimed = bool(self.settings.get('lock')) and not self.emulator
+            stall = None
             if self.settings.get('flash'):
                 try:
                     digest, last = self.flash()
                     self.results.append(('flash', 'ok', last))
+                except FlashStalled as e:
+                    digest = e.args[0]
+                    self.stall = {'flash': e.args[1], 'cycled': False}
+                    self.note('flash stalled on the restart: ' + e.args[1])
+                    try:
+                        back = self.stall_branch()
+                    except Exception as e2:      # noqa: BLE001
+                        self.results.append(('flash', 'FAIL', 'stalled on its restart, new OS written: %s' % e2))
+                        return self.finish(t0, digest)
+                    self.stall['cycled'] = True
+                    self.results.append(('flash', 'ok', 'stalled on its restart (new OS written), power cycled '
+                                         'by hand, no reflash; ' + back))
+                    stall = True
                 except Exception as e:           # noqa: BLE001
                     self.results.append(('flash', 'FAIL', str(e)))
                     return self.finish(t0, digest)
@@ -337,6 +436,21 @@ class Plan:
             session.refs = self.rel(self.settings.get('refs', 'refs'))
             session.record_refs = self.emulator and self.settings.get('record-refs', 'no') == 'yes'
             failed = False
+            if stall:
+                # the stall branch's readback, before the plan's own steps: the screen, and on an
+                # analoghealth build (the plan reads stats) stats twice STALL_STATS_GAP s apart
+                lines = ['shot stall-readback.png']
+                if any(shlex.split(l, comments=True)[:1] == ['stats'] for _, ls in self.steps for l in ls):
+                    lines += ['stats', 'wait %d' % STALL_STATS_GAP, 'stats']
+                self.note('[stall readback]')
+                try:
+                    for line in lines:
+                        self.note('  ' + line)
+                        session.step(line)
+                    self.results.append(('stall readback', 'ok', '; '.join(lines)))
+                except Exception as e:           # noqa: BLE001
+                    self.results.append(('stall readback', 'FAIL', '%s: %s' % (type(e).__name__, e)))
+                    failed = True
             for name, lines in self.steps:
                 if failed or (self.emulator and name.endswith('(hardware)')):
                     self.results.append((name, 'skip', ''))
@@ -384,10 +498,19 @@ class Plan:
         summary = {'plan': self.path, 'name': self.name, 'unit': self.unit, 'emulator': self.emulator,
                    'pass': ok, 'seconds': round(time.monotonic() - t0, 1), 'flash_sha256': digest,
                    'steps': [{'step': n, 'result': r, 'detail': d} for n, r, d in self.results]}
+        if self.stall:
+            summary['stall'] = self.stall
         with open(os.path.join(self.run_dir, 'summary.json'), 'w', encoding='utf-8') as fh:
             json.dump(summary, fh, indent=1)
+        if self.claimed and self.stall and not self.stall['cycled']:
+            # a stalled unit is not released: the owner decides what happens next (TSG 3a)
+            self.claimed = False
+            print('the %s STALLED on its restart and was not seen power-cycled: the claim is kept' % self.unit,
+                  file=self.stdout)
         if self.claimed:
             note = 'test plan %s: %s' % (self.name, 'PASS' if ok else 'FAIL at %s' % first[0])
+            if self.stall:
+                note += "; the flash stalled on its restart, power cycled by hand"
             if self.settings.get('note'):
                 note += '; ' + self.settings['note']
             self.lock('release', self.unit, '--note', note)
@@ -397,6 +520,10 @@ class Plan:
             len(self.results), summary['seconds'], self.run_dir)]
         if not self.quiet or not ok:
             lines += ['  %-4s %s' % (r, n) for n, r, _ in self.results]
+        if self.stall:
+            lines.append('STALL: the flash stalled on its restart (new OS written; no reflash): %s' % (
+                'power cycled by hand, read back' if self.stall['cycled'] else
+                'not seen power-cycled, the unit stays marked as stalled and the claim is kept'))
         if first:
             lines.append('first failure, %s: %s' % (first[0], first[2]))
         print('\n'.join(lines), file=self.stdout)
