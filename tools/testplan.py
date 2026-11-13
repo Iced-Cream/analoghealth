@@ -191,7 +191,7 @@ def sha256(path):
 
 
 class Plan:
-    def __init__(self, path, port=None, quiet=False, din=None):
+    def __init__(self, path, port=None, quiet=False, din=None, din_probe=None):
         self.path = os.path.abspath(path)
         self.here = os.path.dirname(self.path)
         self.settings, self.steps = parse(path)
@@ -201,6 +201,7 @@ class Plan:
         self.emulator = g('emulator', 'no').lower() == 'yes'
         self.port = port or g('port') or PORTS.get(self.unit, 'Analog Rytm')
         self.din = (din or g('din')) if uses_din(self.steps) else None   # opened only for din steps
+        self.din_probe = din_probe if din else None     # RESULT.json: din is ;-separated candidates
         self.quiet = quiet
         self.stdout = sys.stdout          # the verdict goes here, whatever the steps print
         stamp = time.strftime('%Y%m%d-%H%M%S')
@@ -427,7 +428,12 @@ class Plan:
             opener = (lambda name: runner.open_port(name, short=True)) if short else runner.open_port
             port = opener(self.port)
             try:
-                din = opener(self.din) if self.din else None
+                if self.din and self.din_probe and hasattr(runner, 'din_port'):
+                    din = runner.din_port(self.din, self.din_probe, opener, short)
+                elif self.din and self.din_probe:
+                    raise ValueError('this runner cannot probe DIN interfaces (--din-probe)')
+                else:
+                    din = opener(self.din) if self.din else None
             except BaseException:
                 port.close()
                 port = None
@@ -530,16 +536,17 @@ class Plan:
         return 0 if ok else 1
 
 
-def run_plan(path, port=None, quiet=False, din=None):
+def run_plan(path, port=None, quiet=False, din=None, din_probe=None):
     if parse(path)[0].get('unit') in DIGI_UNITS and ('analogrun' in sys.modules or 'elkrpc' in sys.modules):
         # analogrun's elkrpc / midisock are loaded here: digirun needs its own, in a new process
         cmd = [sys.executable, os.path.abspath(__file__), path] + (['--port', port] if port else []) + \
-            (['--din', din] if din else []) + (['--quiet'] if quiet else [])
+            (['--din', din] if din else []) + (['--din-probe', din_probe] if din_probe else []) + \
+            (['--quiet'] if quiet else [])
         r = subprocess.run(cmd, capture_output=True, text=True)
         print(r.stdout, end='')
         sys.stderr.write(r.stderr)
         return r.returncode
-    return Plan(path, port, quiet, din).run()
+    return Plan(path, port, quiet, din, din_probe).run()
 
 
 if __name__ == '__main__':
@@ -548,11 +555,12 @@ if __name__ == '__main__':
     ap.add_argument('plan')
     ap.add_argument('--port')
     ap.add_argument('--din')
+    ap.add_argument('--din-probe')
     ap.add_argument('--quiet', action='store_true')
     args = ap.parse_args()
     import midiwatch
     try:
-        rc = run_plan(args.plan, args.port, args.quiet, args.din)
+        rc = run_plan(args.plan, args.port, args.quiet, args.din, args.din_probe)
     except midiwatch.Stuck as e:
         print('error: %s' % e, flush=True)
         rc = midiwatch.STUCK_EXIT

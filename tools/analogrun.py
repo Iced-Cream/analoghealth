@@ -278,6 +278,8 @@ class Session:
     def __init__(self, port, out='.', din=None):
         self.port = Tap(port)
         self.din = Tap(din) if din is not None else None     # the DIN MIDI port (--din)
+        if din is not None and hasattr(din, 'resolve') and din.device is None:
+            din.device = self.device                     # a LazyDin probes for this unit's byte
         self.rpc = elkrpc.Rpc(self.port)
         self.diag = Diag(self.port)
         self.out = out
@@ -286,11 +288,15 @@ class Session:
         self._keys = None
         self._device = None
 
-    def dump_request(self, kind, number=0):
-        """A dump request in this unit's SysEx (its device byte from RPC Ping, once)."""
+    def device(self):
+        """This unit's SysEx device byte (from RPC Ping on its USB port, once)."""
         if self._device is None:
             self._device = dump_device(*self.rpc.ping())
-        return dump_request(kind, number, self._device)
+        return self._device
+
+    def dump_request(self, kind, number=0):
+        """A dump request in this unit's SysEx (its device byte from RPC Ping, once)."""
+        return dump_request(kind, number, self.device())
 
     @property
     def keys(self):
@@ -775,6 +781,15 @@ def open_port(name='Analog Rytm', short=False):
     return Port(name, short=True) if short else Port(name)
 
 
+def din_port(name, result, opener, short=False):
+    """The DIN port: opened now, or with a probe result file, a dinprobe.LazyDin over the
+    ;-separated candidates that picks one at the first DIN step."""
+    if not result:
+        return opener(name)
+    import dinprobe
+    return dinprobe.LazyDin(name.split(';'), opener, result, say=say, short=short)
+
+
 def wants_short(text):
     """Whether steps text has a capture step that reads short messages."""
     for line in text.splitlines():
@@ -801,7 +816,10 @@ def main(argv=None):
                     help='part of the unit\'s MIDI port name (default: Analog Rytm), or IN,OUT')
     ap.add_argument('--din', default=None,
                     help='the MIDI port cabled to the unit\'s DIN ports (name, IN,OUT or tcp:ADDR), '
-                         'for send/capture ... din')
+                         'for send/capture ... din; with --din-probe, candidates separated by ;')
+    ap.add_argument('--din-probe', default=None, metavar='RESULT.json',
+                    help='probe the --din candidates at the first DIN step (dinprobe.py: a working-kit dump '
+                         'request to this unit) and use the one where it answers; the choice goes to RESULT.json')
     ap.add_argument('-q', '--quiet', dest='quiet_mode', action='store_true',
                     help='print one line (ok, or what failed); the rest goes to --log')
     ap.add_argument('--log', help='with --quiet: append the full output to this file')
@@ -843,7 +861,8 @@ def main(argv=None):
     args = ap.parse_args(argv)
 
     if args.cmd == 'run' and args.script != '-' and testplan.is_plan(args.script):
-        return testplan.run_plan(args.script, port=args.port, quiet=args.quiet_mode, din=args.din)
+        return testplan.run_plan(args.script, port=args.port, quiet=args.quiet_mode, din=args.din,
+                                 din_probe=args.din_probe)
     if not args.quiet_mode:
         return _main(ap, args)
     global OUT
@@ -898,7 +917,7 @@ def _main(ap, args):
     opener = (lambda name: open_port(name, short=True)) if short else open_port
     port = opener(args.port or 'Analog Rytm')
     try:
-        din = opener(args.din) if args.din else None
+        din = din_port(args.din, args.din_probe, opener, short) if args.din else None
     except BaseException:
         port.close()
         raise
