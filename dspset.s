@@ -1,5 +1,5 @@
 | SPDX-License-Identifier: GPL-2.0-or-later
-| analoghealth, DSP SETTINGS (Rytm only, core-ar2 0.14): a GLOBAL menu row
+| analoghealth, DSP SETTINGS (Rytm only, core-ar2 0.16): a GLOBAL menu row
 | that opens a menu of core's load savers, one checkbox each, all off until
 | ticked. Core keeps one switch per saver (a want byte) and lets a mod that
 | needs stock's exact render hold any of them off; this menu writes only the
@@ -251,7 +251,7 @@ str_delay:  .asciz  "DELAY CLEAR"
 str_ui:     .asciz  "UI SKIP"
         .balign 4
 
-| struct core_submenu (core-ar2 0.14, analog-rytm-mk2/settings.h); core
+| struct core_submenu (core-ar2 0.16, analog-rytm-mk2/settings.h); core
 | writes its last three words (.run is RAM)
 ds_menu:    .long   str_head, rows, NROWS, 0
             .long   0, 0, 0                 | core's

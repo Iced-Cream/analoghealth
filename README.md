@@ -3,7 +3,7 @@
 A diagnostics mod for the Elektron Analog Rytm MKII (OS 1.74) and Analog Four
 MKII (OS 1.56): irpina's [digihealth](https://github.com/irpina/digihealth)
 for the Digitakt mk1, ported to the two analog machines. It adds two rows to
-SETTINGS, and on the Rytm with core-ar2 0.14 a third:
+SETTINGS, and on the Rytm with core-ar2 0.16 a third:
 
 - **SYSTEM INFO** shows CPU, DSP, RAM and (on the Rytm) free sample memory in
   the top bar. A read-only USB diagnostics channel lets `tools/analogusb.py`
@@ -13,7 +13,7 @@ SETTINGS, and on the Rytm with core-ar2 0.14 a third:
   USB: see [Remote keys](#remote-keys). Off, the unit refuses key commands and
   lets go of any key the computer holds; the diagnostics still answer.
 - **DSP SETTINGS** (Rytm only) opens a menu with a checkbox for each of
-  core-ar2 0.14's load savers, all off until you tick them; two of them change
+  core-ar2 0.16's load savers, all off until you tick them; two of them change
   the sound slightly: see [DSP SETTINGS](#dsp-settings).
 
 digihealth's third row, **FAST AUDIO**, is not ported: see
@@ -132,7 +132,7 @@ for the encoders (revision 4). See [the protocol reference](docs/REMOTE-KEYS.md)
 
 ## DSP SETTINGS
 
-Rytm only, from analoghealth 1.5, which needs core-ar2 0.14. The GLOBAL row
+Rytm only, from analoghealth 1.5, which needs core-ar2 0.16. The GLOBAL row
 DSP SETTINGS opens a menu (core-ar2's submenu, stock's checkbox menu view)
 with one checkbox for each of core's load savers. Each is off until you tick
 it, and each is core's own switch (its README has what each one does):
@@ -184,7 +184,7 @@ You need:
 
 ```bash
 python -m elekloader.patch --stock Analog-Rytm_MKII_OS1.74.syx \
-    --mod core-0.14.elemod --mod out/analoghealth-1.5.elemod \
+    --mod core-0.16.elemod --mod out/analoghealth-1.5.elemod \
     --out Analog-Rytm_MKII_OS1.74-health.syx --version AH14
 python -m elekloader.patch --stock Analog-Four_MKII_OS1.56.syx \
     --mod core-0.1.elemod --mod out/a4/analoghealth-1.2.elemod \
@@ -205,14 +205,14 @@ WSL) and elekloader, importable. The stock file picks the device:
 ```bash
 python build.py --stock Analog-Rytm_MKII_OS1.74.syx     # -> out/analoghealth-1.5.elemod (Rytm)
 python build.py --stock Analog-Four_MKII_OS1.56.syx --out out/a4   # (A4)
-python -m elekloader.lint out/analoghealth-1.5.elemod --stock Analog-Rytm_MKII_OS1.74.syx --with core-0.14.elemod
+python -m elekloader.lint out/analoghealth-1.5.elemod --stock Analog-Rytm_MKII_OS1.74.syx --with core-0.16.elemod
 ```
 
 | file | |
 |---|---|
 | `mod.json`, `a4/mod.json` | the mod for each device: its sites (by address, length and SHA-256), handlers and resources |
 | `build.py` | picks the device's manifest, reads each site's stock bytes from your stock file, checks the hash, and calls elekloader's SDK |
-| `dspset.s` | Rytm only: the DSP SETTINGS row and menu, their project fields and core-ar2 0.14's switches |
+| `dspset.s` | Rytm only: the DSP SETTINGS row and menu, their project fields and core-ar2 0.16's switches |
 | `sysinfo.s` | the SYSTEM INFO and REMOTE KEYS rows, the readout, the render and idle timing, the USB channel |
 | `ar174.inc`, `a4/a4156.inc` | the stock routines and data it uses: Rytm OS 1.74, A4 OS 1.56 |
 | `core_candidate.c`, `core_candidate.s`, `core_candidate.h` | the physical/synthetic input bridge on the button driver, and the encoder input, private to this mod |
