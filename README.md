@@ -3,7 +3,7 @@
 A diagnostics mod for the Elektron Analog Rytm MKII (OS 1.74) and Analog Four
 MKII (OS 1.56): irpina's [digihealth](https://github.com/irpina/digihealth)
 for the Digitakt mk1, ported to the two analog machines. It adds two rows to
-SETTINGS:
+SETTINGS, and on the Rytm with core-ar2 0.16 a third:
 
 - **SYSTEM INFO** shows CPU, DSP, RAM and (on the Rytm) free sample memory in
   the top bar. A read-only USB diagnostics channel lets `tools/analogusb.py`
@@ -12,12 +12,16 @@ SETTINGS:
   the panel's buttons, and `tools/analogusb.py turn` turn its encoders, over
   USB: see [Remote keys](#remote-keys). Off, the unit refuses key commands and
   lets go of any key the computer holds; the diagnostics still answer.
+- **DSP SETTINGS** (Rytm only) opens a menu with a checkbox for each of
+  core-ar2 0.16's load savers, all off until you tick them; two of them change
+  the sound slightly: see [DSP SETTINGS](#dsp-settings).
 
 digihealth's third row, **FAST AUDIO**, is not ported: see
-[Why no FAST AUDIO](#why-no-fast-audio).
+[Why no FAST AUDIO](#why-no-fast-audio). DSP SETTINGS is the Rytm's own way to
+the same end, a lighter render.
 
 It is an [elekloader](https://github.com/irpina/elekloader) mod and needs the
-device's core: core-ar2 on the Rytm (built and checked with 0.4), core-a4 on
+device's core: core-ar2 on the Rytm (0.14 from analoghealth 1.4; 1.3 was built and checked with 0.4), core-a4 on
 the A4 (built and checked with 0.1). elekloader builds a custom OS file on
 your own machine, from your stock OS file and the mods you pick; nothing from
 Elektron is distributed.
@@ -126,6 +130,37 @@ The protocol is digihealth's revision 2 with 128-bit key maps, because these
 machines have more keys than revision 2's 64-bit maps hold, and a TURN action
 for the encoders (revision 4). See [the protocol reference](docs/REMOTE-KEYS.md).
 
+## DSP SETTINGS
+
+Rytm only, from analoghealth 1.5, which needs core-ar2 0.16. The GLOBAL row
+DSP SETTINGS opens a menu (core-ar2's submenu, stock's checkbox menu view)
+with one checkbox for each of core's load savers. Each is off until you tick
+it, and each is core's own switch (its README has what each one does):
+
+| row | core switch | what it skips | sound |
+|---|---|---|---|
+| SAMPLE SKIP | `core_sample_skip_want` | an idle sample layer's interpolation, filter and output | unchanged |
+| FX SKIP | `core_fx_skip_want` | send slots at 0, and the delay while its input and tail are silent | unchanged |
+| REVERB CLEAR | `core_reverb_clear_want` | a silent reverb, cleared and then skipped; acts only while FX SKIP is ticked | the next reverb tail starts from silence: a small change |
+| DELAY CLEAR | `core_delay_clear_want` | a delay quiet for about 11 s, its line cleared; acts only while FX SKIP is ticked | the next echoes start from silence: a small change |
+| UI SKIP | `core_ui_skip_want` | the screen's repeated look-ups of which views are open | unchanged |
+
+- **Where they are kept:** in the project (a 1-bit project field each), so
+  they stay set after a power cycle and come back with the project when you
+  load it. A project saved without them, or by a build with another storage
+  layout, loads with them off. Ticking or unticking a row marks the project changed,
+  as an edit does, so SAVE PROJECT keeps it in the +Drive slot.
+- **Not offered:** core's voice skip (`core_voice_skip_want`). It lowers the
+  average load but raises the per-second DSP peak and changes the sound
+  slightly, so it is left off. 1.4's CPU SAVE field is dropped: a project
+  saved with CPU SAVE ticked loads with every row off.
+- **Other mods:** a mod that needs stock's exact render can hold a saver off
+  through core (its `_hold_add` and `_release`); the row still shows your
+  choice, and the saver comes back when that mod lets go.
+
+`dspset.s` sets core's switches from the rows and, after every project load
+(at boot too) and CREATE NEW, from the project's fields.
+
 ## Why no FAST AUDIO
 
 digihealth's FAST AUDIO runs the Digitakt's audio code from a stretch of the
@@ -149,8 +184,8 @@ You need:
 
 ```bash
 python -m elekloader.patch --stock Analog-Rytm_MKII_OS1.74.syx \
-    --mod core-0.4.elemod --mod out/analoghealth-1.3.elemod \
-    --out Analog-Rytm_MKII_OS1.74-health.syx --version AH13
+    --mod core-0.16.elemod --mod out/analoghealth-1.5.elemod \
+    --out Analog-Rytm_MKII_OS1.74-health.syx --version AH14
 python -m elekloader.patch --stock Analog-Four_MKII_OS1.56.syx \
     --mod core-0.1.elemod --mod out/a4/analoghealth-1.2.elemod \
     --out Analog-Four_MKII_OS1.56-health.syx --version AH12
@@ -168,15 +203,16 @@ The Digitakt mk1 cross toolchain (m68k binutils and gcc; on Debian or Ubuntu,
 WSL) and elekloader, importable. The stock file picks the device:
 
 ```bash
-python build.py --stock Analog-Rytm_MKII_OS1.74.syx     # -> out/analoghealth-1.3.elemod (Rytm)
+python build.py --stock Analog-Rytm_MKII_OS1.74.syx     # -> out/analoghealth-1.5.elemod (Rytm)
 python build.py --stock Analog-Four_MKII_OS1.56.syx --out out/a4   # (A4)
-python -m elekloader.lint out/analoghealth-1.3.elemod --stock Analog-Rytm_MKII_OS1.74.syx --with core-0.4.elemod
+python -m elekloader.lint out/analoghealth-1.5.elemod --stock Analog-Rytm_MKII_OS1.74.syx --with core-0.16.elemod
 ```
 
 | file | |
 |---|---|
 | `mod.json`, `a4/mod.json` | the mod for each device: its sites (by address, length and SHA-256), handlers and resources |
 | `build.py` | picks the device's manifest, reads each site's stock bytes from your stock file, checks the hash, and calls elekloader's SDK |
+| `dspset.s` | Rytm only: the DSP SETTINGS row and menu, their project fields and core-ar2 0.16's switches |
 | `sysinfo.s` | the SYSTEM INFO and REMOTE KEYS rows, the readout, the render and idle timing, the USB channel |
 | `ar174.inc`, `a4/a4156.inc` | the stock routines and data it uses: Rytm OS 1.74, A4 OS 1.56 |
 | `core_candidate.c`, `core_candidate.s`, `core_candidate.h` | the physical/synthetic input bridge on the button driver, and the encoder input, private to this mod |
