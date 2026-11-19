@@ -139,7 +139,6 @@ it, and each is core's own switch (its README has what each one does):
 
 | row | core switch | what it skips | sound |
 |---|---|---|---|
-| VOICE SKIP | `core_voice_skip_want` | a silent voice slot's machine call, every block | a skipped slot's next note starts from its power-on state: a small change |
 | SAMPLE SKIP | `core_sample_skip_want` | an idle sample layer's interpolation, filter and output | unchanged |
 | FX SKIP | `core_fx_skip_want` | send slots at 0, and the delay while its input and tail are silent | unchanged |
 | REVERB CLEAR | `core_reverb_clear_want` | a silent reverb, cleared and then skipped; acts only while FX SKIP is ticked | the next reverb tail starts from silence: a small change |
@@ -149,10 +148,12 @@ it, and each is core's own switch (its README has what each one does):
 - **Where they are kept:** in the project (a 1-bit project field each), so
   they stay set after a power cycle and come back with the project when you
   load it. A project saved without them, or by a build with another storage
-  layout, loads with them off. VOICE SKIP keeps 1.4's CPU SAVE field, so a
-  project saved with CPU SAVE ticked loads with VOICE SKIP ticked (build with
-  the same lockfile). Ticking or unticking a row marks the project changed,
+  layout, loads with them off. Ticking or unticking a row marks the project changed,
   as an edit does, so SAVE PROJECT keeps it in the +Drive slot.
+- **Not offered:** core's voice skip (`core_voice_skip_want`). It lowers the
+  average load but raises the per-second DSP peak and changes the sound
+  slightly, so it is left off. 1.4's CPU SAVE field is dropped: a project
+  saved with CPU SAVE ticked loads with every row off.
 - **Other mods:** a mod that needs stock's exact render can hold a saver off
   through core (its `_hold_add` and `_release`); the row still shows your
   choice, and the saver comes back when that mod lets go.
